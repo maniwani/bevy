@@ -338,6 +338,9 @@ pub struct ArchetypeIdentity {
 pub struct ArchetypeComponentId(usize);
 
 impl ArchetypeComponentId {
+    /// Reserved for [`WorldAccess`](crate::system::WorldAccess).
+    pub(crate) const WORLD_ACCESS: ArchetypeComponentId = ArchetypeComponentId(0);
+
     #[inline]
     pub const fn new(index: usize) -> Self {
         Self(index)
@@ -371,7 +374,7 @@ impl Default for Archetypes {
         let mut archetypes = Archetypes {
             archetypes: Vec::new(),
             archetype_ids: Default::default(),
-            archetype_component_count: 0,
+            archetype_component_count: 1, // 0 is reserved for WORLD_ACCESS
         };
         archetypes.get_id_or_insert(TableId::empty(), Vec::new(), Vec::new());
 

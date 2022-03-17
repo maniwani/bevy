@@ -3,24 +3,32 @@ use bevy_utils::HashSet;
 use fixedbitset::FixedBitSet;
 use std::marker::PhantomData;
 
-/// `Access` keeps track of read and write accesses to values within a collection.
+/// Tracks read and write access to specific elements in a collection.
 ///
-/// This is used for ensuring systems are executed soundly.
+/// System initialization and execution uses these to ensure soundness.
+/// See the [`is_compatible`](Access::is_compatible) and [`get_conflicts`](Access::get_conflicts) functions.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct Access<T: SparseSetIndex> {
-    reads_all: bool,
-    /// A combined set of T read and write accesses.
+    /// The accessed elements.
     reads_and_writes: FixedBitSet,
+    /// The exclusively-accessed elements.
     writes: FixedBitSet,
+    /// Does this have access to all elements in the collection?
+    /// This field exists as a performance optimization for `&World` and `&mut World`.
+    reads_all: bool,
+    /// Does this have exclusive access to all elements in the collection?
+    /// This field exists as a performance optimization for `&mut World`.
+    writes_all: bool,
     marker: PhantomData<T>,
 }
 
 impl<T: SparseSetIndex> Default for Access<T> {
     fn default() -> Self {
         Self {
-            reads_all: false,
             reads_and_writes: Default::default(),
             writes: Default::default(),
+            reads_all: false,
+            writes_all: false,
             marker: PhantomData,
         }
     }
@@ -32,21 +40,21 @@ impl<T: SparseSetIndex> Access<T> {
         self.writes.grow(bits);
     }
 
-    /// Adds a read access for the given index.
+    /// Adds access to the element given by `index`.
     pub fn add_read(&mut self, index: T) {
         self.reads_and_writes.grow(index.sparse_set_index() + 1);
         self.reads_and_writes.insert(index.sparse_set_index());
     }
 
-    /// Adds a write access for the given index.
+    /// Adds exclusive access to the element given by `index`.
     pub fn add_write(&mut self, index: T) {
         self.reads_and_writes.grow(index.sparse_set_index() + 1);
-        self.writes.grow(index.sparse_set_index() + 1);
         self.reads_and_writes.insert(index.sparse_set_index());
+        self.writes.grow(index.sparse_set_index() + 1);
         self.writes.insert(index.sparse_set_index());
     }
 
-    /// Returns true if this `Access` contains a read access for the given index.
+    /// Returns `true` if this can access the element given by `index`.
     pub fn has_read(&self, index: T) -> bool {
         if self.reads_all {
             true
@@ -55,76 +63,118 @@ impl<T: SparseSetIndex> Access<T> {
         }
     }
 
-    /// Returns true if this `Access` contains a write access for the given index.
+    /// Returns `true` if this can exclusively access the element given by `index`.
     pub fn has_write(&self, index: T) -> bool {
-        self.writes.contains(index.sparse_set_index())
+        if self.writes_all {
+            true
+        } else {
+            self.writes.contains(index.sparse_set_index())
+        }
     }
 
-    /// Sets this `Access` to having read access for all indices.
-    pub fn read_all(&mut self) {
+    /// Sets this as having access to all indexed elements.
+    pub(crate) fn read_all(&mut self) {
         self.reads_all = true;
     }
 
-    /// Returns true if this `Access` has read access to all indices.
-    pub fn reads_all(&self) -> bool {
-        self.reads_all
+    /// Sets this as having exclusive access to all indexed elements.
+    pub(crate) fn write_all(&mut self) {
+        self.reads_all = true;
+        self.writes_all = true;
     }
 
-    /// Clears all recorded accesses.
+    /// Removes all accesses.
     pub fn clear(&mut self) {
         self.reads_all = false;
+        self.writes_all = false;
         self.reads_and_writes.clear();
         self.writes.clear();
     }
 
-    /// Extends this `Access` with another, copying all accesses of `other` into this.
+    /// Adds all access from `other`.
     pub fn extend(&mut self, other: &Access<T>) {
         self.reads_all = self.reads_all || other.reads_all;
+        self.writes_all = self.writes_all || other.writes_all;
         self.reads_and_writes.union_with(&other.reads_and_writes);
         self.writes.union_with(&other.writes);
     }
 
-    /// Returns true if this `Access` is compatible with `other`.
+    /// Returns `true` if this and `other` can be active at the same time.
     ///
-    /// Two `Access` instances are incompatible with each other if one `Access` has a write for
-    /// which the other also has a write or a read.
+    /// `Access` instances are incompatible if one or both wants exclusive access to an element they have in common
+    /// (data race).
     pub fn is_compatible(&self, other: &Access<T>) -> bool {
-        if self.reads_all {
-            0 == other.writes.count_ones(..)
-        } else if other.reads_all {
-            0 == self.writes.count_ones(..)
-        } else {
-            self.writes.is_disjoint(&other.reads_and_writes)
-                && self.reads_and_writes.is_disjoint(&other.writes)
+        // Only systems with no access are compatible with systems that operate on &mut World
+        if self.writes_all {
+            return other.reads_and_writes.count_ones(..) == 0;
         }
-    }
 
-    /// Calculates conflicting accesses between this `Access` and `other`.
-    pub fn get_conflicts(&self, other: &Access<T>) -> Vec<T> {
-        let mut conflicts = FixedBitSet::default();
+        if other.writes_all {
+            return self.reads_and_writes.count_ones(..) == 0;
+        }
+
+        // Only systems that do not write data are compatible with systems that operate on &World
         if self.reads_all {
-            conflicts.extend(other.writes.ones());
+            return other.writes.count_ones(..) == 0;
         }
 
         if other.reads_all {
-            conflicts.extend(self.writes.ones());
+            return self.writes.count_ones(..) == 0;
         }
-        conflicts.extend(self.writes.intersection(&other.reads_and_writes));
-        conflicts.extend(self.reads_and_writes.intersection(&other.writes));
+
+        self.writes.is_disjoint(&other.reads_and_writes)
+            && self.reads_and_writes.is_disjoint(&other.writes)
+    }
+
+    /// Returns a vector of elements that this and `other` cannot access at the same time.
+    pub fn get_conflicts(&self, other: &Access<T>) -> Vec<T> {
+        let mut conflicts = FixedBitSet::default();
+
+        // this also covers the case where two `&mut World` systems conflict
+        // it's just the world metadata component
+        if self.writes_all {
+            conflicts.extend(other.reads_and_writes.ones());
+        }
+
+        if other.writes_all {
+            conflicts.extend(self.reads_and_writes.ones());
+        }
+
+        if !(self.writes_all || other.writes_all) {
+            match (self.reads_all, other.reads_all) {
+                (false, false) => {
+                    conflicts.extend(self.writes.intersection(&other.reads_and_writes));
+                    conflicts.extend(self.reads_and_writes.intersection(&other.writes));
+                }
+                (false, true) => {
+                    conflicts.extend(self.writes.ones());
+                }
+                (true, false) => {
+                    conflicts.extend(other.writes.ones());
+                }
+                (true, true) => (),
+            }
+        }
+
         conflicts
             .ones()
             .map(SparseSetIndex::get_sparse_set_index)
             .collect()
     }
 
-    /// Returns all read accesses.
+    /// Returns the indices of the elements this has access to.
     pub fn reads(&self) -> impl Iterator<Item = T> + '_ {
+        self.reads_and_writes.ones().map(T::get_sparse_set_index)
+    }
+
+    /// Returns the indices of the elements this has non-exclusive access to.
+    pub fn only_reads(&self) -> impl Iterator<Item = T> + '_ {
         self.reads_and_writes
             .difference(&self.writes)
             .map(T::get_sparse_set_index)
     }
 
-    /// Returns all write accesses.
+    /// Returns the indices of the elements this has exclusive access to.
     pub fn writes(&self) -> impl Iterator<Item = T> + '_ {
         self.writes.ones().map(T::get_sparse_set_index)
     }
@@ -196,8 +246,12 @@ impl<T: SparseSetIndex> FilteredAccess<T> {
         self.without.union_with(&access.without);
     }
 
-    pub fn read_all(&mut self) {
+    pub(crate) fn read_all(&mut self) {
         self.access.read_all();
+    }
+
+    pub(crate) fn write_all(&mut self) {
+        self.access.write_all();
     }
 }
 #[derive(Clone, Debug)]

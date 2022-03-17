@@ -1,6 +1,7 @@
 use crate::{
-    archetype::{Archetype, ArchetypeComponentId},
+    archetype::ArchetypeComponentId,
     component::ComponentId,
+    ptr::SemiSafeCell,
     query::Access,
     system::{IntoSystem, System},
     world::World,
@@ -60,9 +61,9 @@ impl<SystemA: System, SystemB: System<In = SystemA::Out>> System for ChainSystem
         self.name.clone()
     }
 
-    fn new_archetype(&mut self, archetype: &Archetype) {
-        self.system_a.new_archetype(archetype);
-        self.system_b.new_archetype(archetype);
+    fn update_archetype_component_access(&mut self, world: &World) {
+        self.system_a.update_archetype_component_access(world);
+        self.system_b.update_archetype_component_access(world);
 
         self.archetype_component_access
             .extend(self.system_a.archetype_component_access());
@@ -82,9 +83,13 @@ impl<SystemA: System, SystemB: System<In = SystemA::Out>> System for ChainSystem
         self.system_a.is_send() && self.system_b.is_send()
     }
 
-    unsafe fn run_unsafe(&mut self, input: Self::In, world: &World) -> Self::Out {
-        let out = self.system_a.run_unsafe(input, world);
-        self.system_b.run_unsafe(out, world)
+    fn is_exclusive(&self) -> bool {
+        self.system_a.is_exclusive() || self.system_b.is_exclusive()
+    }
+
+    unsafe fn run_unchecked(&mut self, input: Self::In, world: SemiSafeCell<World>) -> Self::Out {
+        let out = self.system_a.run_unchecked(input, world);
+        self.system_b.run_unchecked(out, world)
     }
 
     fn apply_buffers(&mut self, world: &mut World) {

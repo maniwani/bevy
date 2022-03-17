@@ -1,7 +1,8 @@
 use crate::{
-    archetype::{ArchetypeComponentId, ArchetypeGeneration},
+    archetype::ArchetypeComponentId,
+    ptr::SemiSafeCell,
     query::Access,
-    schedule::{ParallelSystemContainer, ParallelSystemExecutor},
+    schedule::{FunctionSystemContainer, SystemExecutor},
     world::World,
 };
 use async_channel::{Receiver, Sender};
@@ -32,8 +33,6 @@ struct SystemSchedulingMetadata {
 }
 
 pub struct ParallelExecutor {
-    /// Last archetypes generation observed by parallel systems.
-    archetype_generation: ArchetypeGeneration,
     /// Cached metadata of every system.
     system_metadata: Vec<SystemSchedulingMetadata>,
     /// Used by systems to notify the executor that they have finished.
@@ -60,7 +59,6 @@ impl Default for ParallelExecutor {
     fn default() -> Self {
         let (finish_sender, finish_receiver) = async_channel::unbounded();
         Self {
-            archetype_generation: ArchetypeGeneration::initial(),
             system_metadata: Default::default(),
             finish_sender,
             finish_receiver,
@@ -76,8 +74,8 @@ impl Default for ParallelExecutor {
     }
 }
 
-impl ParallelSystemExecutor for ParallelExecutor {
-    fn rebuild_cached_data(&mut self, systems: &[ParallelSystemContainer]) {
+impl SystemExecutor for ParallelExecutor {
+    fn rebuild_cached_data(&mut self, systems: &[FunctionSystemContainer]) {
         self.system_metadata.clear();
         self.queued.grow(systems.len());
         self.running.grow(systems.len());
@@ -85,8 +83,12 @@ impl ParallelSystemExecutor for ParallelExecutor {
 
         // Construct scheduling data for systems.
         for container in systems.iter() {
-            let dependencies_total = container.dependencies().len();
             let system = container.system();
+            if system.is_exclusive() {
+                panic!("executor does not support systems with the `&mut World` param");
+            }
+
+            let dependencies_total = container.dependencies().len();
             let (start_sender, start_receiver) = async_channel::bounded(1);
             self.system_metadata.push(SystemSchedulingMetadata {
                 start_sender,
@@ -106,7 +108,7 @@ impl ParallelSystemExecutor for ParallelExecutor {
         }
     }
 
-    fn run_systems(&mut self, systems: &mut [ParallelSystemContainer], world: &mut World) {
+    fn run_systems(&mut self, systems: &mut [FunctionSystemContainer], world: &mut World) {
         #[cfg(test)]
         if self.events_sender.is_none() {
             let (sender, receiver) = async_channel::unbounded::<SchedulingEvent>();
@@ -114,11 +116,26 @@ impl ParallelSystemExecutor for ParallelExecutor {
             self.events_sender = Some(sender);
         }
 
-        self.update_archetypes(systems, world);
+        #[cfg(feature = "trace")]
+        let update_system_access_span = bevy_utils::tracing::info_span!("update_archetypes");
+        #[cfg(feature = "trace")]
+        let update_system_access_guard = update_system_access_span.enter();
+        for (index, container) in systems.iter_mut().enumerate() {
+            let meta = &mut self.system_metadata[index];
+            let system = container.system_mut();
+            system.update_archetype_component_access(world);
+            meta.archetype_component_access
+                .extend(system.archetype_component_access());
+        }
+        #[cfg(feature = "trace")]
+        drop(update_system_access_guard);
 
         let compute_pool = world
             .get_resource_or_insert_with(|| ComputeTaskPool(TaskPool::default()))
             .clone();
+
+        let world = SemiSafeCell::from_mut(world);
+
         compute_pool.scope(|scope| {
             self.prepare_systems(scope, systems, world);
             let parallel_executor = async {
@@ -154,34 +171,13 @@ impl ParallelSystemExecutor for ParallelExecutor {
 }
 
 impl ParallelExecutor {
-    /// Calls `system.new_archetype()` for each archetype added since the last call to
-    /// `update_archetypes` and updates cached `archetype_component_access`.
-    fn update_archetypes(&mut self, systems: &mut [ParallelSystemContainer], world: &World) {
-        #[cfg(feature = "trace")]
-        let _span = bevy_utils::tracing::info_span!("update_archetypes").entered();
-        let archetypes = world.archetypes();
-        let new_generation = archetypes.generation();
-        let old_generation = std::mem::replace(&mut self.archetype_generation, new_generation);
-        let archetype_index_range = old_generation.value()..new_generation.value();
-
-        for archetype in archetypes.archetypes[archetype_index_range].iter() {
-            for (index, container) in systems.iter_mut().enumerate() {
-                let meta = &mut self.system_metadata[index];
-                let system = container.system_mut();
-                system.new_archetype(archetype);
-                meta.archetype_component_access
-                    .extend(system.archetype_component_access());
-            }
-        }
-    }
-
     /// Populates `should_run` bitset, spawns tasks for systems that should run this iteration,
     /// queues systems with no dependencies to run (or skip) at next opportunity.
-    fn prepare_systems<'scope>(
+    fn prepare_systems<'world: 'scope, 'scope>(
         &mut self,
         scope: &mut Scope<'scope, ()>,
-        systems: &'scope mut [ParallelSystemContainer],
-        world: &'scope World,
+        systems: &'scope mut [FunctionSystemContainer],
+        world: SemiSafeCell<'world, World>,
     ) {
         #[cfg(feature = "trace")]
         let _span = bevy_utils::tracing::info_span!("prepare_systems").entered();
@@ -207,7 +203,7 @@ impl ParallelExecutor {
                         .unwrap_or_else(|error| unreachable!("{}", error));
                     #[cfg(feature = "trace")]
                     let system_guard = system_span.enter();
-                    unsafe { system.run_unsafe((), world) };
+                    unsafe { system.run_unchecked((), world) };
                     #[cfg(feature = "trace")]
                     drop(system_guard);
                     finish_sender

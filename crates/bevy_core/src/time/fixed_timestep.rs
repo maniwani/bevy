@@ -1,7 +1,8 @@
 use crate::Time;
 use bevy_ecs::{
-    archetype::{Archetype, ArchetypeComponentId},
+    archetype::ArchetypeComponentId,
     component::ComponentId,
+    ptr::SemiSafeCell,
     query::Access,
     schedule::ShouldRun,
     system::{IntoSystem, Res, ResMut, System},
@@ -177,8 +178,9 @@ impl System for FixedTimestep {
         Cow::Borrowed(std::any::type_name::<FixedTimestep>())
     }
 
-    fn new_archetype(&mut self, archetype: &Archetype) {
-        self.internal_system.new_archetype(archetype);
+    fn update_archetype_component_access(&mut self, world: &World) {
+        self.internal_system
+            .update_archetype_component_access(world);
     }
 
     fn archetype_component_access(&self) -> &Access<ArchetypeComponentId> {
@@ -193,10 +195,10 @@ impl System for FixedTimestep {
         self.internal_system.is_send()
     }
 
-    unsafe fn run_unsafe(&mut self, _input: (), world: &World) -> ShouldRun {
+    unsafe fn run_unchecked(&mut self, _input: (), world: SemiSafeCell<World>) -> ShouldRun {
         // SAFE: this system inherits the internal system's component access and archetype component
         // access, which means the caller has ensured running the internal system is safe
-        self.internal_system.run_unsafe((), world)
+        self.internal_system.run_unchecked((), world)
     }
 
     fn apply_buffers(&mut self, world: &mut World) {
@@ -222,6 +224,10 @@ impl System for FixedTimestep {
 
     fn check_change_tick(&mut self, change_tick: u32) {
         self.internal_system.check_change_tick(change_tick);
+    }
+
+    fn is_exclusive(&self) -> bool {
+        self.internal_system.is_exclusive()
     }
 }
 
