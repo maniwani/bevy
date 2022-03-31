@@ -15,7 +15,7 @@ use bevy_ecs_macros::all_tuples;
 use std::{borrow::Cow, fmt::Debug, hash::Hash, marker::PhantomData};
 
 /// The metadata of a [`System`].
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SystemMeta {
     pub(crate) name: Cow<'static, str>,
     pub(crate) component_access_set: FilteredAccessSet<ComponentId>,
@@ -24,9 +24,6 @@ pub struct SystemMeta {
     // NOTE: This field must be kept private. Making a `SystemMeta` non-`Send` is irreversible to
     // prevent multiple system params from toggling it.
     is_send: bool,
-    // NOTE: This field was a tempoary measure to remove `.exclusive_system()` without disturbing
-    // the rest of the existing API. See #4166.
-    is_exclusive: bool,
 }
 
 impl SystemMeta {
@@ -37,7 +34,6 @@ impl SystemMeta {
             component_access_set: FilteredAccessSet::default(),
             last_change_tick: 0,
             is_send: true,
-            is_exclusive: false,
         }
     }
 
@@ -66,9 +62,10 @@ impl SystemMeta {
     }
 }
 
-// TODO: Use this in FunctionSystem.
+// TODO: Use SystemState in FunctionSystem.
 // #2777 wants systems initialized upon construction instead of deferring it.
 // That would let us avoid unwrapping `Option` fields in `FunctionSystem`.
+
 /// Stores persistent state required by the [parameters](crate::system#system-construction)
 /// of a [`System`](crate::system::System).
 /// Enables borrowing arbitrary data from the [`World`], just like a [`System`].
@@ -441,11 +438,6 @@ where
     }
 
     #[inline]
-    fn is_exclusive(&self) -> bool {
-        self.system_meta.is_exclusive()
-    }
-
-    #[inline]
     unsafe fn run_unchecked(&mut self, input: Self::In, world: SemiSafeCell<World>) -> Self::Out {
         let change_tick = world.as_ref().increment_change_tick();
         let out = self.func.run(
@@ -622,8 +614,9 @@ macro_rules! impl_system_function {
 
 all_tuples!(impl_system_function, 0, 16, P);
 
-/// Used to implicitly convert systems to their default labels. For example, it will convert
-/// "system functions" to their [`SystemTypeIdLabel`].
+/// Implicit conversion of [`System`] types into a [`SystemLabel`] (or several).
+///
+/// For example, `System`-compatible functions are converted into a [`SystemTypeIdLabel`].
 pub trait AsSystemLabel<Marker> {
     type SystemLabel: SystemLabel;
     fn as_system_label(&self) -> Self::SystemLabel;

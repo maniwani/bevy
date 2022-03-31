@@ -1,7 +1,7 @@
 use crate::{
     archetype::ArchetypeComponentId,
+    cell::SemiSafeCell,
     component::ComponentId,
-    ptr::SemiSafeCell,
     query::Access,
     system::{IntoSystem, System},
     world::World,
@@ -9,14 +9,14 @@ use crate::{
 use std::borrow::Cow;
 
 /// A [`System`] that chains two systems together, creating a new system that routes the output of
-/// the first system into the input of the second system, yielding the output of the second system.
+/// the first system into the input of the second system, then returns the output of the second system.
 ///
-/// Given two systems A and B, A may be chained with B as `A.chain(B)` if the output type of A is
-/// equal to the input type of B.
+/// Given two systems, A and B, A can be chained with B as `A.chain(B)` if the output type of A
+/// matches the input type of B.
 ///
-/// Note that for [`FunctionSystem`](crate::system::FunctionSystem)s the output is the return value
-/// of the function and the input is the first [`SystemParam`](crate::system::SystemParam) if it is
-/// tagged with [`In`](crate::system::In) or `()` if the function has no designated input parameter.
+/// Note: A [`FunctionSystem`](crate::system::FunctionSystem)'s output is the function
+/// return type and its input is the argument wrapped with [`In`](crate::system::In)
+/// or `()` if there is none.
 ///
 /// # Examples
 ///
@@ -81,10 +81,6 @@ impl<SystemA: System, SystemB: System<In = SystemA::Out>> System for ChainSystem
 
     fn is_send(&self) -> bool {
         self.system_a.is_send() && self.system_b.is_send()
-    }
-
-    fn is_exclusive(&self) -> bool {
-        self.system_a.is_exclusive() || self.system_b.is_exclusive()
     }
 
     unsafe fn run_unchecked(&mut self, input: Self::In, world: SemiSafeCell<World>) -> Self::Out {
