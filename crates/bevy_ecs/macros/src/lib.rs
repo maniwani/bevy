@@ -399,7 +399,7 @@ pub fn derive_system_param(input: TokenStream) -> TokenStream {
             unsafe fn get_param(
                 state: &'s mut Self,
                 system_meta: &#path::system::SystemMeta,
-                world: #path::ptr::SemiSafeCell<'w, #path::world::World>,
+                world: #path::cell::SemiSafeCell<'w, #path::world::World>,
                 change_tick: u32,
             ) -> Self::Item {
                 #struct_name {

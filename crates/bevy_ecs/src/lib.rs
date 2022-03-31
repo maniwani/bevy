@@ -2,11 +2,11 @@
 
 pub mod archetype;
 pub mod bundle;
+pub mod cell;
 pub mod change_detection;
 pub mod component;
 pub mod entity;
 pub mod event;
-pub mod ptr;
 pub mod query;
 #[cfg(feature = "bevy_reflect")]
 pub mod reflect;
@@ -28,14 +28,10 @@ pub mod prelude {
         entity::Entity,
         event::{EventReader, EventWriter},
         query::{Added, AnyOf, ChangeTrackers, Changed, Or, QueryState, With, Without},
-        schedule::{
-            AmbiguitySetLabel, IntoSystemDescriptor, RunCriteria, RunCriteriaDescriptorCoercion,
-            RunCriteriaLabel, RunCriteriaPiping, Schedule, Stage, StageLabel, State, SystemLabel,
-            SystemSet, SystemStage,
-        },
+        schedule::SystemLabel,
         system::{
             Commands, In, IntoChainSystem, IntoSystem, Local, NonSend, NonSendMut, ParamSet, Query,
-            RemovedComponents, Res, ResMut, System, SystemParamFunction,
+            RemovedComponents, Res, ResMut, System,
         },
         world::{FromWorld, Mut, World},
     };

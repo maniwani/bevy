@@ -1,8 +1,8 @@
 use bevy_utils::tracing::warn;
 
 use crate::{
-    archetype::ArchetypeComponentId, change_detection::MAX_CHANGE_AGE, component::ComponentId,
-    ptr::SemiSafeCell, query::Access, schedule::SystemLabel, world::World,
+    archetype::ArchetypeComponentId, cell::SemiSafeCell, change_detection::MAX_CHANGE_AGE,
+    component::ComponentId, query::Access, schedule::SystemLabel, world::World,
 };
 use std::borrow::Cow;
 

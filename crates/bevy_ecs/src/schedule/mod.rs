@@ -7,7 +7,6 @@
 //!
 //! - Systems can be arranged through a combination of `.label()`, `.before()`, and `.after()` methods.
 //! - When systems have an undefined order, their command queues may be applied in a different order each app run.
-//!
 
 mod condition;
 mod descriptor;

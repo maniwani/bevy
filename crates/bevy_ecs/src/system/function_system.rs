@@ -1,8 +1,8 @@
 use crate::{
     archetype::{ArchetypeComponentId, ArchetypeGeneration, ArchetypeId},
+    cell::SemiSafeCell,
     change_detection::MAX_CHANGE_AGE,
     component::ComponentId,
-    ptr::SemiSafeCell,
     query::{Access, FilteredAccessSet},
     schedule::SystemLabel,
     system::{
@@ -49,16 +49,6 @@ impl SystemMeta {
     #[inline]
     pub fn set_non_send(&mut self) {
         self.is_send = false;
-    }
-
-    #[inline]
-    pub(crate) fn is_exclusive(&self) -> bool {
-        self.is_exclusive
-    }
-
-    #[inline]
-    pub(crate) fn set_exclusive(&mut self) {
-        self.is_exclusive = true;
     }
 }
 

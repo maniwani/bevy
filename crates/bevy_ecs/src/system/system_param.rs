@@ -3,10 +3,10 @@ use crate::{
     self as bevy_ecs,
     archetype::{Archetype, ArchetypeComponentId, Archetypes},
     bundle::Bundles,
+    cell::SemiSafeCell,
     change_detection::Ticks,
     component::{Component, ComponentId, ComponentTicks, Components},
     entity::{Entities, Entity},
-    ptr::SemiSafeCell,
     query::{
         FilterFetch, FilteredAccess, FilteredAccessSet, QueryState, ReadOnlyFetch, WorldQuery,
     },
@@ -165,9 +165,6 @@ fn add_exclusive_world_access(world: &mut World, system_meta: &mut SystemMeta, p
             param_name, system_meta.name,
         );
     }
-
-    // ensure SystemStage recognizes this system as exclusive, see #4166
-    system_meta.set_exclusive();
 
     // conflict with any param that holds &World (if this param appears first)
     system_meta.component_access_set.add(world_access);
