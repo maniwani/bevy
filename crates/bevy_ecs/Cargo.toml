@@ -26,6 +26,9 @@ thiserror = "1.0"
 downcast-rs = "1.2"
 serde = "1"
 
+petgraph = "0"
+bitvec = "1"
+
 [dev-dependencies]
 parking_lot = "0.11"
 rand = "0.8"
