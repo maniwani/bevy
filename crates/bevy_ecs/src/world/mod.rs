@@ -10,7 +10,7 @@ pub use world_cell::*;
 use crate::{
     archetype::{ArchetypeComponentId, ArchetypeComponentInfo, ArchetypeId, Archetypes},
     bundle::{Bundle, BundleInserter, BundleSpawner, Bundles},
-    change_detection::Ticks,
+    change_detection::{Ticks, CHECK_TICK_THRESHOLD},
     component::{Component, ComponentId, ComponentTicks, Components, StorageType},
     entity::{AllocAtWithoutReplacement, Entities, Entity},
     query::{FilterFetch, QueryState, WorldQuery},
@@ -88,12 +88,13 @@ pub struct World {
     main_thread_validator: MainThreadValidator,
     pub(crate) change_tick: AtomicU32,
     pub(crate) last_change_tick: u32,
+    pub(crate) last_check_tick: u32,
 }
 
 impl Default for World {
     fn default() -> Self {
         Self {
-            id: WorldId::new().expect("More `bevy` `World`s have been created than is supported"),
+            id: WorldId::new().expect("more worlds have been created than Bevy supports"),
             entities: Default::default(),
             components: Default::default(),
             archetypes: Default::default(),
@@ -106,6 +107,7 @@ impl Default for World {
             // are detected on first system runs and for direct world queries.
             change_tick: AtomicU32::new(1),
             last_change_tick: 0,
+            last_check_tick: 0,
         }
     }
 }
@@ -1259,15 +1261,31 @@ impl World {
         self.last_change_tick
     }
 
+    #[inline]
+    pub fn last_check_tick(&self) -> u32 {
+        self.last_check_tick
+    }
+
+    /// All component change ticks are scanned for risk of age overflow once the world counter
+    /// has incremented at least [`CHECK_TICK_THRESHOLD`](crate::change_detection::CHECK_TICK_THRESHOLD)
+    /// times since the previous `check_tick` scan.
+    ///
+    /// During each scan, any change ticks older than [`MAX_CHANGE_AGE`](crate::change_detection::MAX_CHANGE_AGE)
+    /// are clamped to that age. This prevents false positives that would appear because of overflow.
+    // TODO: parallelize
     pub fn check_change_ticks(&mut self) {
-        // Iterate over all component change ticks, clamping their age to max age
-        // PERF: parallelize
         let change_tick = self.change_tick();
-        self.storages.tables.check_change_ticks(change_tick);
-        self.storages.sparse_sets.check_change_ticks(change_tick);
-        let resource_archetype = self.archetypes.resource_mut();
-        for column in resource_archetype.unique_components.values_mut() {
-            column.check_change_ticks(change_tick);
+        if change_tick.wrapping_sub(self.last_check_tick()) >= CHECK_TICK_THRESHOLD {
+            #[cfg(feature = "trace")]
+            let span = bevy_utils::tracing::info_span!("check component ticks");
+            #[cfg(feature = "trace")]
+            let _guard = span.enter();
+            self.storages.tables.check_change_ticks(change_tick);
+            self.storages.sparse_sets.check_change_ticks(change_tick);
+            let resource_archetype = self.archetypes.resource_mut();
+            for column in resource_archetype.unique_components.values_mut() {
+                column.check_change_ticks(change_tick);
+            }
         }
     }
 

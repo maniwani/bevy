@@ -1,126 +1,145 @@
-use bevy_utils::{tracing::warn, HashMap, HashSet};
-use fixedbitset::FixedBitSet;
-use std::{borrow::Cow, fmt::Debug, hash::Hash};
+use bevy_utils::{HashMap, HashSet};
 
-pub enum DependencyGraphError<Labels> {
-    GraphCycles(Vec<(usize, Labels)>),
+use bitvec::prelude::*;
+use petgraph::{graphmap::NodeTrait, prelude::*};
+
+use std::fmt::Debug;
+
+/// Converts 2D row-major indices into 1D array index.
+pub(crate) fn index(row: usize, col: usize, num_cols: usize) -> usize {
+    assert!(col < num_cols);
+    (row * num_cols) + col
 }
 
-pub trait GraphNode {
-    type Label;
-    fn name(&self) -> Cow<'static, str>;
-    fn labels(&self) -> &[Self::Label];
-    fn before(&self) -> &[Self::Label];
-    fn after(&self) -> &[Self::Label];
+/// Converts 1D array index into 2D row-major indices.
+pub(crate) fn row_col(index: usize, num_cols: usize) -> (usize, usize) {
+    (index / num_cols, index % num_cols)
 }
 
-/// Constructs a dependency graph of given nodes.
-pub fn build_dependency_graph<Node>(
-    nodes: &[Node],
-) -> HashMap<usize, HashMap<usize, HashSet<Node::Label>>>
+pub(crate) struct CheckGraphResults<V> {
+    // Pairs of nodes whose relative order is unknown.
+    pub(crate) ambiguities: HashSet<(V, V)>,
+    // Edges that are redundant because a longer path exists.
+    pub(crate) transitive_edges: Vec<(V, V)>,
+    // Boolean reachability matrices for the graph.
+    pub(crate) reachable: BitVec<usize, Lsb0>,
+    // Variant of the graph with the fewest possible edges.
+    pub(crate) tred: DiGraphMap<V, ()>,
+    // Variant of the graph with the most possible edges.
+    pub(crate) tcls: DiGraphMap<V, ()>,
+}
+
+impl<V: NodeTrait + Debug> Default for CheckGraphResults<V> {
+    fn default() -> Self {
+        Self {
+            ambiguities: HashSet::new(),
+            transitive_edges: Vec::new(),
+            reachable: BitVec::new(),
+            tred: DiGraphMap::new(),
+            tcls: DiGraphMap::new(),
+        }
+    }
+}
+
+pub(crate) fn check_graph<V>(
+    graph: &DiGraphMap<V, ()>,
+    topological_order: &[V],
+) -> CheckGraphResults<V>
 where
-    Node: GraphNode,
-    Node::Label: Debug + Clone + Eq + Hash,
+    V: NodeTrait + Debug,
 {
-    let mut labels = HashMap::<Node::Label, FixedBitSet>::default();
-    for (label, index) in nodes.iter().enumerate().flat_map(|(index, container)| {
-        container
-            .labels()
-            .iter()
-            .cloned()
-            .map(move |label| (label, index))
-    }) {
-        labels
-            .entry(label)
-            .or_insert_with(|| FixedBitSet::with_capacity(nodes.len()))
-            .insert(index);
-    }
-    let mut graph = HashMap::with_capacity_and_hasher(nodes.len(), Default::default());
-    for (index, node) in nodes.iter().enumerate() {
-        let dependencies = graph.entry(index).or_insert_with(HashMap::default);
-        for label in node.after() {
-            match labels.get(label) {
-                Some(new_dependencies) => {
-                    for dependency in new_dependencies.ones() {
-                        dependencies
-                            .entry(dependency)
-                            .or_insert_with(HashSet::default)
-                            .insert(label.clone());
-                    }
-                }
-                None => warn!(
-                    // TODO: plumb this as proper output?
-                    "{} wants to be after unknown label: {:?}",
-                    nodes[index].name(),
-                    label
-                ),
-            }
-        }
-        for label in node.before() {
-            match labels.get(label) {
-                Some(dependants) => {
-                    for dependant in dependants.ones() {
-                        graph
-                            .entry(dependant)
-                            .or_insert_with(HashMap::default)
-                            .entry(index)
-                            .or_insert_with(HashSet::default)
-                            .insert(label.clone());
-                    }
-                }
-                None => warn!(
-                    "{} wants to be before unknown label: {:?}",
-                    nodes[index].name(),
-                    label
-                ),
-            }
-        }
-    }
-    graph
-}
+    let n = graph.node_count();
 
-/// Generates a topological order for the given graph.
-pub fn topological_order<Labels: Clone>(
-    graph: &HashMap<usize, HashMap<usize, Labels>>,
-) -> Result<Vec<usize>, DependencyGraphError<Labels>> {
-    fn check_if_cycles_and_visit<L>(
-        node: &usize,
-        graph: &HashMap<usize, HashMap<usize, L>>,
-        sorted: &mut Vec<usize>,
-        unvisited: &mut HashSet<usize>,
-        current: &mut Vec<usize>,
-    ) -> bool {
-        if current.contains(node) {
-            return true;
-        } else if !unvisited.remove(node) {
-            return false;
-        }
-        current.push(*node);
-        for dependency in graph.get(node).unwrap().keys() {
-            if check_if_cycles_and_visit(dependency, graph, sorted, unvisited, current) {
-                return true;
-            }
-        }
-        sorted.push(*node);
-        current.pop();
-        false
+    if n == 0 {
+        return CheckGraphResults::default();
     }
-    let mut sorted = Vec::with_capacity(graph.len());
-    let mut current = Vec::with_capacity(graph.len());
-    let mut unvisited = HashSet::with_capacity_and_hasher(graph.len(), Default::default());
-    unvisited.extend(graph.keys().cloned());
-    while let Some(node) = unvisited.iter().next().cloned() {
-        if check_if_cycles_and_visit(&node, graph, &mut sorted, &mut unvisited, &mut current) {
-            let mut cycle = Vec::new();
-            let last_window = [*current.last().unwrap(), current[0]];
-            let mut windows = current
-                .windows(2)
-                .chain(std::iter::once(&last_window as &[usize]));
-            while let Some(&[dependant, dependency]) = windows.next() {
-                cycle.push((dependant, graph[&dependant][&dependency].clone()));
-            }
-            return Err(DependencyGraphError::GraphCycles(cycle));
+
+    let mut map = HashMap::with_capacity(n);
+    let mut tsorted = DiGraphMap::<V, ()>::new();
+    // iterate nodes in topological order
+    for (i, &node) in topological_order.iter().enumerate() {
+        map.insert(node, i);
+        tsorted.add_node(node.clone());
+        // insert nodes as successors to their predecessors
+        for pred in graph.neighbors_directed(node, Direction::Incoming) {
+            tsorted.add_edge(pred, node, ());
         }
     }
-    Ok(sorted)
+
+    let mut tred = DiGraphMap::<V, ()>::new();
+    let mut tcls = DiGraphMap::<V, ()>::new();
+    let mut ambiguities = HashSet::new();
+    let mut transitive_edges = Vec::new();
+
+    let mut visited = BitVec::<usize, Lsb0>::with_capacity(n);
+    unsafe {
+        visited.set_len(n);
+    }
+    visited.fill(false);
+
+    let mut reachable = BitVec::<usize, Lsb0>::with_capacity(n * n);
+    unsafe {
+        reachable.set_len(n * n);
+    }
+    reachable.fill(false);
+
+    // iterate nodes in topological order
+    for node in tsorted.nodes() {
+        tred.add_node(node);
+        tcls.add_node(node);
+    }
+
+    // iterate nodes in reverse topological order
+    for a in tsorted.nodes().rev() {
+        let index_a = *map.get(&a).unwrap();
+        // iterate their successors in topological order
+        for b in tsorted.neighbors_directed(a, Direction::Outgoing) {
+            let index_b = *map.get(&b).unwrap();
+            debug_assert!(index_a < index_b);
+            if !visited[index_b] {
+                // edge <a, b> is not redundant
+                tred.add_edge(a, b, ());
+                tcls.add_edge(a, b, ());
+                reachable.set(index(index_a, index_b, n), true);
+
+                let successors = tcls
+                    .neighbors_directed(b, Direction::Outgoing)
+                    .collect::<Vec<_>>();
+                for c in successors.into_iter() {
+                    let index_c = *map.get(&c).unwrap();
+                    debug_assert!(index_b < index_c);
+                    if !visited[index_c] {
+                        visited.set(index_c, true);
+                        tcls.add_edge(a, c, ());
+                        reachable.set(index(index_a, index_c, n), true);
+                    }
+                }
+            } else {
+                transitive_edges.push((a, b));
+            }
+        }
+
+        visited.fill(false);
+    }
+
+    for i in 0..(n - 1) {
+        // reachable is upper triangular because the nodes are in topological order
+        for index in reachable[index(i, i + 1, n)..index(i, n - 1, n)].iter_zeros() {
+            let (a, b) = row_col(index, n);
+            ambiguities.insert((topological_order[a], topological_order[b]));
+        }
+    }
+
+    // Fill diagonal.
+    for i in 0..n {
+        reachable.set(index(i, i, n), true);
+    }
+
+    CheckGraphResults {
+        ambiguities,
+        transitive_edges,
+        reachable,
+        tred,
+        tcls,
+    }
 }
