@@ -4,7 +4,7 @@ use rand::{thread_rng, Rng};
 #[derive(Debug, Hash, PartialEq, Eq, Clone, StageLabel)]
 struct FixedUpdateStage;
 
-const DELTA_TIME: f64 = 0.01;
+const TIME_STEP: f32 = 0.01;
 
 fn main() {
     App::new()
@@ -14,12 +14,13 @@ fn main() {
             brightness: 0.03,
             ..default()
         })
+        .add_startup_system(setup_fixed_timestep)
         .add_startup_system(generate_bodies)
         .add_stage_after(
             CoreStage::Update,
             FixedUpdateStage,
             SystemStage::parallel()
-                .with_run_criteria(FixedTimestep::step(DELTA_TIME))
+                .with_run_criteria(FixedTimestep::step)
                 .with_system(interact_bodies)
                 .with_system(integrate),
         )
@@ -49,8 +50,13 @@ struct BodyBundle {
     acceleration: Acceleration,
 }
 
+fn setup_fixed_timestep(mut time: ResMut<FixedTime>) {
+    time.set_delta_seconds(TIME_STEP);
+}
+
 fn generate_bodies(
     mut commands: Commands,
+    time: Res<FixedTime>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -102,7 +108,7 @@ fn generate_bodies(
                         rng.gen_range(vel_range.clone()),
                         rng.gen_range(vel_range.clone()),
                         rng.gen_range(vel_range.clone()),
-                    ) * DELTA_TIME as f32,
+                    ) * time.delta_seconds(),
             ),
         });
     }
@@ -161,8 +167,11 @@ fn interact_bodies(mut query: Query<(&Mass, &GlobalTransform, &mut Acceleration)
     }
 }
 
-fn integrate(mut query: Query<(&mut Acceleration, &mut Transform, &mut LastPos)>) {
-    let dt_sq = (DELTA_TIME * DELTA_TIME) as f32;
+fn integrate(
+    time: Res<FixedTime>,
+    mut query: Query<(&mut Acceleration, &mut Transform, &mut LastPos)>,
+) {
+    let dt_sq = time.delta_seconds() * time.delta_seconds();
     for (mut acceleration, mut transform, mut last_pos) in query.iter_mut() {
         // verlet integration
         // x(t+dt) = 2x(t) - x(t-dt) + a(t)dt^2 + O(dt^4)

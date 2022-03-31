@@ -76,15 +76,15 @@ fn move_scene_entities(
     time: Res<Time>,
     mut scene_entities: Query<&mut Transform, With<EntityInMyScene>>,
 ) {
-    let mut direction = 1.;
-    let mut scale = 1.;
+    let mut direction = 1.0;
+    let mut scale = 1.0;
     for mut transform in scene_entities.iter_mut() {
         transform.translation = Vec3::new(
-            scale * direction * time.seconds_since_startup().sin() as f32 / 20.,
-            0.,
-            time.seconds_since_startup().cos() as f32 / 20.,
+            scale * direction * time.seconds_since_startup().sin() / 20.0,
+            0.0,
+            time.seconds_since_startup().cos() / 20.0,
         );
-        direction *= -1.;
+        direction *= -1.0;
         scale += 0.5;
     }
 }

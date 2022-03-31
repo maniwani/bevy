@@ -49,7 +49,7 @@ fn main() {
         .add_system(counter_system)
         .add_system_set(
             SystemSet::new()
-                .with_run_criteria(FixedTimestep::step(0.2))
+                .with_run_criteria(FixedTimestep::step)
                 .with_system(scheduled_spawner),
         )
         .run();
@@ -88,7 +88,9 @@ struct BirdTexture(Handle<Image>);
 #[derive(Component)]
 struct StatsText;
 
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup(mut commands: Commands, mut time: ResMut<FixedTime>, asset_server: Res<AssetServer>) {
+    time.set_delta_seconds(0.2);
+
     let texture = asset_server.load("branding/icon.png");
 
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());

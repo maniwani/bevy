@@ -106,7 +106,7 @@ fn text_update_system(diagnostics: Res<Diagnostics>, mut query: Query<&mut Text,
 
 fn text_color_system(time: Res<Time>, mut query: Query<&mut Text, With<ColorText>>) {
     for mut text in query.iter_mut() {
-        let seconds = time.seconds_since_startup() as f32;
+        let seconds = time.seconds_since_startup();
         // We used the `Text::with_section` helper method, but it is still just a `Text`,
         // so to update it, we are still updating the one and only section
         text.sections[0].style.color = Color::Rgba {

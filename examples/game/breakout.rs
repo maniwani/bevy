@@ -60,7 +60,7 @@ fn main() {
         .add_startup_system(setup)
         .add_system_set(
             SystemSet::new()
-                .with_run_criteria(FixedTimestep::step(TIME_STEP as f64))
+                .with_run_criteria(FixedTimestep::step)
                 .with_system(check_for_collisions)
                 .with_system(move_paddle.before(check_for_collisions))
                 .with_system(apply_velocity.before(check_for_collisions)),
@@ -162,7 +162,10 @@ struct Scoreboard {
 }
 
 // Add the game's entities to our world
-fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup(mut commands: Commands, mut time: ResMut<FixedTime>, asset_server: Res<AssetServer>) {
+    // FixedTimestep
+    time.set_delta_seconds(TIME_STEP);
+
     // Cameras
     commands.spawn_bundle(OrthographicCameraBundle::new_2d());
     commands.spawn_bundle(UiCameraBundle::default());
@@ -308,6 +311,7 @@ fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 fn move_paddle(
     keyboard_input: Res<Input<KeyCode>>,
+    time: Res<FixedTime>,
     mut query: Query<&mut Transform, With<Paddle>>,
 ) {
     let mut paddle_transform = query.single_mut();
@@ -322,7 +326,8 @@ fn move_paddle(
     }
 
     // Calculate the new horizontal paddle position based on player input
-    let new_paddle_position = paddle_transform.translation.x + direction * PADDLE_SPEED * TIME_STEP;
+    let new_paddle_position =
+        paddle_transform.translation.x + direction * PADDLE_SPEED * time.delta_seconds();
 
     // Update the paddle position,
     // making sure it doesn't cause the paddle to leave the arena
@@ -332,10 +337,10 @@ fn move_paddle(
     paddle_transform.translation.x = new_paddle_position.clamp(left_bound, right_bound);
 }
 
-fn apply_velocity(mut query: Query<(&mut Transform, &Velocity)>) {
+fn apply_velocity(time: Res<FixedTime>, mut query: Query<(&mut Transform, &Velocity)>) {
     for (mut transform, velocity) in query.iter_mut() {
-        transform.translation.x += velocity.x * TIME_STEP;
-        transform.translation.y += velocity.y * TIME_STEP;
+        transform.translation.x += velocity.x * time.delta_seconds();
+        transform.translation.y += velocity.y * time.delta_seconds();
     }
 }
 

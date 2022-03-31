@@ -13,6 +13,7 @@ fn main() {
         .init_resource::<Game>()
         .add_plugins(DefaultPlugins)
         .add_state(GameState::Playing)
+        .add_startup_system(setup_fixed_timestep)
         .add_startup_system(setup_cameras)
         .add_system_set(SystemSet::on_enter(GameState::Playing).with_system(setup))
         .add_system_set(
@@ -28,7 +29,7 @@ fn main() {
         .add_system_set(SystemSet::on_exit(GameState::GameOver).with_system(teardown))
         .add_system_set(
             SystemSet::new()
-                .with_run_criteria(FixedTimestep::step(5.0))
+                .with_run_criteria(FixedTimestep::step)
                 .with_system(spawn_bonus),
         )
         .add_system(bevy::input::system::exit_on_esc_system)
@@ -74,6 +75,10 @@ const RESET_FOCUS: [f32; 3] = [
     0.0,
     BOARD_SIZE_J as f32 / 2.0 - 0.5,
 ];
+
+fn setup_fixed_timestep(mut time: ResMut<FixedTime>) {
+    time.set_delta_seconds(5.0);
+}
 
 fn setup_cameras(mut commands: Commands, mut game: ResMut<Game>) {
     game.camera_should_focus = Vec3::from(RESET_FOCUS);
@@ -350,7 +355,7 @@ fn rotate_bonus(game: Res<Game>, time: Res<Time>, mut transforms: Query<&mut Tra
         if let Ok(mut cake_transform) = transforms.get_mut(entity) {
             cake_transform.rotate(Quat::from_rotation_y(time.delta_seconds()));
             cake_transform.scale = Vec3::splat(
-                1.0 + (game.score as f32 / 10.0 * time.seconds_since_startup().sin() as f32).abs(),
+                1.0 + (game.score as f32 / 10.0 * time.seconds_since_startup().sin()).abs(),
             );
         }
     }

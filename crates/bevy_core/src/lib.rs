@@ -15,7 +15,9 @@ pub use time::*;
 pub mod prelude {
     //! The Bevy Core Prelude.
     #[doc(hidden)]
-    pub use crate::{DefaultTaskPoolOptions, Name, Time, Timer};
+    pub use crate::{
+        DefaultTaskPoolOptions, FixedTime, FixedTimestep, FixedTimestepState, Name, Time, Timer,
+    };
 }
 
 use bevy_app::prelude::*;
@@ -33,8 +35,7 @@ pub struct CorePlugin;
 /// A `SystemLabel` enum for ordering systems relative to core Bevy systems.
 #[derive(Debug, PartialEq, Eq, Clone, Hash, SystemLabel)]
 pub enum CoreSystem {
-    /// Updates the elapsed time. Any system that interacts with [Time] component should run after
-    /// this.
+    /// Advances time. Any system that interacts with the [`Time`] resource should run after this.
     Time,
 }
 
@@ -48,7 +49,8 @@ impl Plugin for CorePlugin {
             .create_default_pools(&mut app.world);
 
         app.init_resource::<Time>()
-            .init_resource::<FixedTimesteps>()
+            .init_resource::<FixedTime>()
+            .init_resource::<FixedTimestepState>()
             .register_type::<HashSet<String>>()
             .register_type::<Option<String>>()
             .register_type::<Entity>()
