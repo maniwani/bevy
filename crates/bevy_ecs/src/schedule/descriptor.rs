@@ -1,6 +1,6 @@
 use crate::{
     schedule::{label::SystemLabel, BoxedRunCondition, BoxedSystemLabel, IntoRunCondition},
-    system::{BoxedSystem, IntoSystem, System},
+    system::{AsSystemLabel, BoxedSystem, IntoSystem, System},
 };
 
 use bevy_utils::HashSet;
@@ -117,9 +117,9 @@ pub trait IntoSetDescriptor: sealed::IntoSetDescriptor {
     /// Configures the system set to run under the set given by `label`.
     fn to(self, label: impl SystemLabel) -> SetDescriptor;
     /// Configures the system set to run before `label`.
-    fn before(self, label: impl SystemLabel) -> SetDescriptor;
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor;
     /// Configures the system set to run after `label`.
-    fn after(self, label: impl SystemLabel) -> SetDescriptor;
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor;
     /// Configures the system set to run only if `condition` returns `true`.
     fn iff<P>(self, condition: impl IntoRunCondition<P>) -> SetDescriptor;
 }
@@ -136,11 +136,11 @@ where
         new_set(Box::new(self)).to(label)
     }
 
-    fn before(self, label: impl SystemLabel) -> SetDescriptor {
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor {
         new_set(Box::new(self)).before(label)
     }
 
-    fn after(self, label: impl SystemLabel) -> SetDescriptor {
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor {
         new_set(Box::new(self)).after(label)
     }
 
@@ -158,11 +158,11 @@ impl IntoSetDescriptor for BoxedSystemLabel {
         new_set(self).to(label)
     }
 
-    fn before(self, label: impl SystemLabel) -> SetDescriptor {
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor {
         new_set(self).before(label)
     }
 
-    fn after(self, label: impl SystemLabel) -> SetDescriptor {
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor {
         new_set(self).after(label)
     }
 
@@ -181,13 +181,13 @@ impl IntoSetDescriptor for SetDescriptor {
         self
     }
 
-    fn before(mut self, label: impl SystemLabel) -> SetDescriptor {
-        self.config.edges.push((Order::Before, label.dyn_clone()));
+    fn before<M>(mut self, label: impl AsSystemLabel<M>) -> SetDescriptor {
+        self.config.edges.push((Order::Before, label.as_system_label().dyn_clone()));
         self
     }
 
-    fn after(mut self, label: impl SystemLabel) -> SetDescriptor {
-        self.config.edges.push((Order::After, label.dyn_clone()));
+    fn after<M>(mut self, label: impl AsSystemLabel<M>) -> SetDescriptor {
+        self.config.edges.push((Order::After, label.as_system_label().dyn_clone()));
         self
     }
 
@@ -228,9 +228,9 @@ pub trait IntoSystemDescriptor<Params>: sealed::IntoSystemDescriptor<Params> {
     /// Configures the system to run under the set given by `label`.
     fn to(self, label: impl SystemLabel) -> SystemDescriptor;
     /// Configures the system to run before `label`.
-    fn before(self, label: impl SystemLabel) -> SystemDescriptor;
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor;
     /// Configures the system to run after `label`.
-    fn after(self, label: impl SystemLabel) -> SystemDescriptor;
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor;
     /// Configures the system to run only if `condition` returns `true`.
     fn iff<P>(self, condition: impl IntoRunCondition<P>) -> SystemDescriptor;
 }
@@ -251,11 +251,11 @@ where
         new_system(Box::new(IntoSystem::into_system(self))).to(label)
     }
 
-    fn before(self, label: impl SystemLabel) -> SystemDescriptor {
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
         new_system(Box::new(IntoSystem::into_system(self))).before(label)
     }
 
-    fn after(self, label: impl SystemLabel) -> SystemDescriptor {
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
         new_system(Box::new(IntoSystem::into_system(self))).after(label)
     }
 
@@ -277,11 +277,11 @@ impl IntoSystemDescriptor<()> for BoxedSystem<(), ()> {
         new_system(self).to(label)
     }
 
-    fn before(self, label: impl SystemLabel) -> SystemDescriptor {
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
         new_system(self).before(label)
     }
 
-    fn after(self, label: impl SystemLabel) -> SystemDescriptor {
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
         new_system(self).after(label)
     }
 
@@ -305,13 +305,13 @@ impl IntoSystemDescriptor<()> for SystemDescriptor {
         self
     }
 
-    fn before(mut self, label: impl SystemLabel) -> SystemDescriptor {
-        self.config.edges.push((Order::Before, label.dyn_clone()));
+    fn before<M>(mut self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
+        self.config.edges.push((Order::Before, label.as_system_label().dyn_clone()));
         self
     }
 
-    fn after(mut self, label: impl SystemLabel) -> SystemDescriptor {
-        self.config.edges.push((Order::After, label.dyn_clone()));
+    fn after<M>(mut self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
+        self.config.edges.push((Order::After, label.as_system_label().dyn_clone()));
         self
     }
 

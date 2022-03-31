@@ -615,10 +615,10 @@ pub trait AsSystemLabel<Marker> {
 impl<In, Out, Param: SystemParam, Marker, T: SystemParamFunction<In, Out, Param, Marker>>
     AsSystemLabel<(In, Out, Param, Marker)> for T
 {
-    type SystemLabel = SystemTypeIdLabel<Self>;
+    type SystemLabel = &'static str;
 
     fn as_system_label(&self) -> Self::SystemLabel {
-        SystemTypeIdLabel(PhantomData::<fn() -> Self>)
+        std::any::type_name::<T>()
     }
 }
 
