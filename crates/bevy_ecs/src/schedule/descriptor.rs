@@ -182,12 +182,16 @@ impl IntoSetDescriptor for SetDescriptor {
     }
 
     fn before<M>(mut self, label: impl AsSystemLabel<M>) -> SetDescriptor {
-        self.config.edges.push((Order::Before, label.as_system_label().dyn_clone()));
+        self.config
+            .edges
+            .push((Order::Before, label.as_system_label().dyn_clone()));
         self
     }
 
     fn after<M>(mut self, label: impl AsSystemLabel<M>) -> SetDescriptor {
-        self.config.edges.push((Order::After, label.as_system_label().dyn_clone()));
+        self.config
+            .edges
+            .push((Order::After, label.as_system_label().dyn_clone()));
         self
     }
 
@@ -306,12 +310,16 @@ impl IntoSystemDescriptor<()> for SystemDescriptor {
     }
 
     fn before<M>(mut self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
-        self.config.edges.push((Order::Before, label.as_system_label().dyn_clone()));
+        self.config
+            .edges
+            .push((Order::Before, label.as_system_label().dyn_clone()));
         self
     }
 
     fn after<M>(mut self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
-        self.config.edges.push((Order::After, label.as_system_label().dyn_clone()));
+        self.config
+            .edges
+            .push((Order::After, label.as_system_label().dyn_clone()));
         self
     }
 

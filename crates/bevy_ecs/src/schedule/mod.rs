@@ -439,8 +439,8 @@ impl SystemRegistry {
         visited.insert(id);
 
         while let Some(id) = queue.pop_front() {
-            // sub_hier.add_node(id);
             for child_id in self.hier.neighbors_directed(id, Direction::Outgoing) {
+                sub_hier.add_edge(id, child_id, ());
                 if child_id.is_set() {
                     if !visited.contains(&child_id) {
                         visited.insert(child_id);
@@ -473,16 +473,12 @@ impl SystemRegistry {
         // we'll build up everything in reverse topological order
         let scc = tarjan_scc(&sub_hier);
         self.check_graph_cycles(id, &sub_hier, &scc, Cycle::Hierarchy)?;
+        let topsort = scc.into_iter().flatten().rev().collect::<Vec<_>>();
 
-        let topsort = scc
-            .into_iter()
-            .flatten()
-            .filter_map(|id| match id {
-                // if modified
-                RegistryId::Set(_) => Some(id),
-                _ => None,
-            })
-            .rev()
+        let sets_topsort = topsort
+            .iter()
+            .cloned()
+            .filter_map(|id| if id.is_set() { Some(id) } else { None })
             .collect::<Vec<_>>();
 
         let result = check_graph(&sub_hier, &topsort);
@@ -490,20 +486,20 @@ impl SystemRegistry {
         self.check_ambiguous(&sub_hier, &intersecting_sets, &result.ambiguities)?;
 
         // update component access
-        for parent in topsort.iter().rev() {
-            let set = self.set_metadata.get(&parent).unwrap();
+        for &set_id in sets_topsort.iter().rev() {
+            let set = self.set_metadata.get(&set_id).unwrap();
             let children = set.graph.nodes().collect::<Vec<_>>();
             for child in children.iter() {
                 match child {
                     RegistryId::System(_) => {
-                        let set = self.set_metadata.get_mut(&parent).unwrap();
+                        let set = self.set_metadata.get_mut(&set_id).unwrap();
                         let system = self.systems.get(&child).unwrap();
                         let access = system.as_ref().unwrap().component_access();
                         set.component_access.extend(&access);
                     }
                     RegistryId::Set(_) => {
                         let [set, subset] =
-                            self.set_metadata.get_many_mut([&parent, &child]).unwrap();
+                            self.set_metadata.get_many_mut([&set_id, &child]).unwrap();
                         set.component_access.extend(&subset.component_access);
                     }
                 }
@@ -511,9 +507,9 @@ impl SystemRegistry {
         }
 
         // flatten (to system nodes and system-system edges only)
-        for parent in topsort.iter().rev() {
+        for &set_id in sets_topsort.iter().rev() {
             let mut flat = DiGraphMap::<RegistryId, ()>::new();
-            let set = self.set_metadata.get(&parent).unwrap();
+            let set = self.set_metadata.get(&set_id).unwrap();
             for child in set.graph.nodes() {
                 match child {
                     RegistryId::System(_) => {
@@ -551,7 +547,7 @@ impl SystemRegistry {
                 }
             }
 
-            let subgraph = self.set_metadata.get_mut(&parent).unwrap();
+            let subgraph = self.set_metadata.get_mut(&set_id).unwrap();
             subgraph.flat = flat;
         }
 
@@ -559,7 +555,7 @@ impl SystemRegistry {
         // topsort flat graphs and check for errors
         // runner data
 
-        for &set_id in topsort.iter().rev() {
+        for &set_id in sets_topsort.iter().rev() {
             let set = self.set_metadata.get(&set_id).unwrap();
             let scc = tarjan_scc(&set.graph);
             self.check_graph_cycles(set_id, &set.graph, &scc, Cycle::Dependency)?;
@@ -570,6 +566,7 @@ impl SystemRegistry {
         set.hier_topsort = topsort;
 
         if set.executor_modified {
+            set.executor_modified = false;
             self.rebuild_set_executor(id);
         }
 

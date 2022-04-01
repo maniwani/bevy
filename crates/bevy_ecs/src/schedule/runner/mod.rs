@@ -2,13 +2,12 @@ mod multi_threaded;
 mod single_threaded;
 
 use crate::{
-    schedule::{
-        runner::single_threaded::SingleThreadedRunner, BoxedRunCondition, RegistryId, SystemLabel,
-        SystemRegistry,
-    },
+    schedule::{BoxedRunCondition, RegistryId, SystemLabel, SystemRegistry},
     system::BoxedSystem,
     world::World,
 };
+
+use self::single_threaded::{SimpleRunner, SingleThreadedRunner};
 
 #[cfg(feature = "trace")]
 use bevy_utils::tracing::Instrument;
@@ -17,8 +16,6 @@ use bevy_utils::HashMap;
 use downcast_rs::{impl_downcast, Downcast};
 use fixedbitset::FixedBitSet;
 
-use self::single_threaded::SimpleRunner;
-
 /// Types that can run [`System`] instances on the data stored in a [`World`].
 pub trait SystemRunner: Downcast + Send + Sync {
     fn run(&mut self, world: &mut World);
@@ -26,9 +23,8 @@ pub trait SystemRunner: Downcast + Send + Sync {
 
 impl_downcast!(SystemRunner);
 
-/// Internal resource used to signal the executor to apply the buffers of
-/// pending systems in the currently running schedule.
-pub(crate) struct RunnerApplyBuffers(pub bool);
+/// Internal resource used to signal the runner to apply pending commands to the [`World`].
+pub(super) struct RunnerApplyBuffers(pub bool);
 
 impl Default for RunnerApplyBuffers {
     fn default() -> Self {
@@ -36,9 +32,7 @@ impl Default for RunnerApplyBuffers {
     }
 }
 
-/// Applies the buffers of all pending systems in the currently running schedule
-/// (in the order specified by the schedule).
-// TODO: Remind user to apply commands before running a nested schedule.
+/// Applies pending command queues to the [`World`].
 pub fn apply_buffers(world: &mut World) {
     // Best place to do this check.
     world.check_change_ticks();
@@ -99,10 +93,10 @@ impl Runner {
     }
 }
 
-/// Runs the system or system set given by `label` on the world.
-pub fn run_systems(label: impl SystemLabel, world: &mut World) {
+/// Runs the system or system set given by `schedule` on the world.
+pub fn run_systems(schedule: impl SystemLabel, world: &mut World) {
     let mut reg = world.resource_mut::<SystemRegistry>();
-    let id = *reg.ids.get(&label.dyn_clone()).expect("unknown label");
+    let id = *reg.ids.get(&schedule.dyn_clone()).expect("unknown label");
     match id {
         RegistryId::System(_) => {
             let mut reg = world.resource_mut::<SystemRegistry>();

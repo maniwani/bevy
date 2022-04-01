@@ -28,12 +28,16 @@ pub mod prelude {
         entity::Entity,
         event::{EventReader, EventWriter},
         query::{Added, AnyOf, ChangeTrackers, Changed, Or, QueryState, With, Without},
-        schedule::SystemLabel,
+        schedule::{
+            apply_buffers, apply_state_transition, Fsm, IntoSetDescriptor, IntoSystemDescriptor,
+            State, SystemLabel,
+        },
         system::{
             Commands, In, IntoChainSystem, IntoSystem, Local, NonSend, NonSendMut, ParamSet, Query,
             RemovedComponents, Res, ResMut, System,
         },
         world::{FromWorld, Mut, World},
+        {chain, group},
     };
 }
 

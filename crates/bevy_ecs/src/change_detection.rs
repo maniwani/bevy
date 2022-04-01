@@ -161,7 +161,7 @@ pub(crate) struct Ticks<'a> {
 /// # Panics
 ///
 /// Panics when used as a `SystemParam` if `T` has not be inserted as a resource.
-/// 
+///
 /// Use `Option<ResMut<T>>` instead if the resource might not always exist.
 pub struct ResMut<'a, T: Resource> {
     pub(crate) value: &'a mut T,
@@ -174,15 +174,15 @@ impl_debug!(ResMut<'a, T>, Resource);
 
 /// Unique mutable borrow of a non-[`Send`] resource.
 ///
-/// Only `Send` resources may be accessed with [`ResMut<T>`]. If a resource does not implement `Send`, 
+/// Only `Send` resources may be accessed with [`ResMut<T>`]. If a resource does not implement `Send`,
 /// this [`SystemParam`](crate::system::SystemParam) must be used to ensure the accessing system runs on the same thread.
-/// 
+///
 /// For a shared borrow, see [`NonSend<T>`](crate::system::NonSend).
 ///
 /// # Panics
 ///
 /// Panics when used as a `SystemParam` if `T` has not be inserted as a resource.
-/// 
+///
 /// Use `Option<NonSendMut<T>>` instead if the resource might not always exist.
 pub struct NonSendMut<'a, T: 'static> {
     pub(crate) value: &'a mut T,
