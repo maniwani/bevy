@@ -28,28 +28,7 @@
 //! # System construction
 //!
 //! Any function or closure whose parameters implement the [`SystemParam`] trait can be automatically
-//! converted into a system:
-//!
-//! - [`Query<...>`](Query)
-//! - [`QuerySet<Q1, ...>`](QuerySet)
-//! - [`Res<T>`] and ([`Option<Res<T>>`](Res))
-//! - [`ResMut<T>`] and ([`Option<ResMut<T>>`](ResMut))
-//! - [`NonSend<T>`] and ([`Option<NonSend<T>>`](NonSend))
-//! - [`NonSendMut<T>`] and ([`Option<NonSendMut<T>>`](NonSendMut))
-//! - [`Commands`]
-//! - [`EventReader`](crate::event::EventReader)
-//! - [`EventWriter`](crate::event::EventWriter)
-//! - [`Local<T>`]
-//! - [`&World`](crate::world::World)
-//! - [`&mut World`](crate::world::World)
-//! - [`&Entities`](crate::entity::Entities)
-//! - [`&Components`](crate::component::Components)
-//! - [`&Bundles`](crate::bundle::Bundles)
-//! - [`&Archetypes`](crate::archetype::Archetypes)
-//! - [`RemovedComponents<T>`]
-//! - [`SystemChangeTick`]
-//! - [`()` (unit primitive type)](https://doc.rust-lang.org/stable/std/primitive.unit.html)
-//! - Tuples with up to 16 [`SystemParam`] elements
+//! converted into a system.
 
 mod commands;
 mod function_system;
@@ -67,7 +46,7 @@ pub use system_chaining::*;
 pub use system_param::*;
 
 pub fn assert_is_system<In, Out, Params, S: IntoSystem<In, Out, Params>>(sys: S) {
-    // Check it can be converted into a system
+    // check that it can be converted into a system
     IntoSystem::into_system(sys);
 }
 

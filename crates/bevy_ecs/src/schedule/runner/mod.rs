@@ -2,7 +2,7 @@ mod multi_threaded;
 mod single_threaded;
 
 use crate::{
-    schedule::{BoxedRunCondition, RegistryId, SystemLabel, SystemRegistry},
+    schedule::{BoxedRunCondition, RegId, SystemLabel, SystemRegistry},
     system::BoxedSystem,
     world::World,
 };
@@ -23,7 +23,11 @@ pub trait SystemRunner: Downcast + Send + Sync {
 
 impl_downcast!(SystemRunner);
 
-/// Internal resource used to signal the runner to apply pending commands to the [`World`].
+/// Internal resource used by [`apply_buffers`] to signal the runner to apply the buffers
+/// of all completed but "unflushed" systems to the [`World`].
+///
+/// **Note** that it is only systems under the schedule being run and their buffers
+/// are applied in topological order.
 pub(super) struct RunnerApplyBuffers(pub bool);
 
 impl Default for RunnerApplyBuffers {
@@ -32,23 +36,20 @@ impl Default for RunnerApplyBuffers {
     }
 }
 
-/// Applies pending command queues to the [`World`].
+/// Signals the runner to call [`apply_buffers`](crate::System::apply_buffers) for all
+/// completed but "unflushed" systems on the [`World`].
+///
+/// **Note** that it is only systems under the schedule being run and their buffers
+/// are applied in topological order.
 pub fn apply_buffers(world: &mut World) {
-    // Best place to do this check.
-    world.check_change_ticks();
-
-    let mut should_apply_buffers = world
-        .get_resource_mut::<RunnerApplyBuffers>()
-        .expect("RunnerApplyBuffers resource does not exist.");
-
-    // The executor resets this to false, so if it's true, something is weird.
-    assert!(
-        !should_apply_buffers.0,
-        "pending commands should have been applied"
-    );
+    let mut should_apply_buffers = world.resource_mut::<RunnerApplyBuffers>();
+    assert!(!should_apply_buffers.0, "pending commands not applied");
     should_apply_buffers.0 = true;
+    world.check_change_ticks();
 }
 
+/// Temporarily takes ownership of systems and the schematic for running them in order
+/// and testing their conditions.
 pub(crate) struct Runner {
     /// A list of systems, topsorted according to system dependency graph.
     pub(crate) systems: Vec<BoxedSystem>,
@@ -63,9 +64,11 @@ pub(crate) struct Runner {
     /// A map relating each set index to a bitset of its descendant systems.
     pub(crate) set_systems: HashMap<usize, FixedBitSet>,
     /// A list of systems (their ids), topsorted according to dependency graph.
-    pub(crate) systems_topsort: Vec<RegistryId>,
+    /// Used to return systems and their conditions to the registry.
+    pub(crate) systems_topsort: Vec<RegId>,
     /// A list of sets (their ids), topsorted according to hierarchy graph.
-    pub(crate) sets_topsort: Vec<RegistryId>,
+    /// Used to return set conditions to the registry.
+    pub(crate) sets_topsort: Vec<RegId>,
 }
 
 impl Default for Runner {
@@ -94,11 +97,12 @@ impl Runner {
 }
 
 /// Runs the system or system set given by `schedule` on the world.
-pub fn run_systems(schedule: impl SystemLabel, world: &mut World) {
+pub fn run_scheduled(schedule: impl SystemLabel, world: &mut World) {
     let mut reg = world.resource_mut::<SystemRegistry>();
     let id = *reg.ids.get(&schedule.dyn_clone()).expect("unknown label");
     match id {
-        RegistryId::System(_) => {
+        RegId::System(_) => {
+            // TODO: Need to confirm that system is available before taking ownership.
             let mut reg = world.resource_mut::<SystemRegistry>();
             let mut system = reg.systems.get_mut(&id).unwrap().take().unwrap();
             let mut system_conditions = reg.system_conditions.get_mut(&id).unwrap().take().unwrap();
@@ -122,13 +126,15 @@ pub fn run_systems(schedule: impl SystemLabel, world: &mut World) {
                 .get_mut(&id)
                 .map(|container| container.insert(system_conditions));
         }
-        RegistryId::Set(_) => {
+        RegId::Set(_) => {
             let mut reg = world.resource_mut::<SystemRegistry>();
             let mut runner = reg.runners.get_mut(&id).unwrap().take().unwrap();
             assert!(runner.systems.is_empty());
             assert!(runner.system_conditions.is_empty());
             assert!(runner.set_conditions.is_empty());
 
+            // TODO: Need to refresh set metadata first.
+            // TODO: Then, need to confirm that all its systems are available before taking ownership.
             for sys_id in runner.systems_topsort.iter() {
                 runner
                     .systems
@@ -165,6 +171,10 @@ pub fn run_systems(schedule: impl SystemLabel, world: &mut World) {
                 .iter()
                 .zip(runner.set_conditions.drain(..));
 
+            // If the systems and sets were removed while they were running,
+            // they'll just be dropped here.
+            // TODO: Say something if container wasn't empty.
+            // TODO: User might be doing something weird (removing systems then re-adding under same name).
             let mut reg = world.resource_mut::<SystemRegistry>();
             for (sys_id, (system, run_criteria)) in sys_iter {
                 reg.systems

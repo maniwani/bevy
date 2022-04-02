@@ -7,16 +7,16 @@ use bevy_utils::HashSet;
 
 /// Unique identifier for a system or system set stored in the [`SystemRegistry`].
 #[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
-pub enum RegistryId {
+pub enum RegId {
     System(u64),
     Set(u64),
 }
 
-impl RegistryId {
+impl RegId {
     /// Returns `true` if this identifies a system.
     pub fn is_system(&self) -> bool {
         match self {
-            RegistryId::System(_) => true,
+            RegId::System(_) => true,
             _ => false,
         }
     }
@@ -24,21 +24,21 @@ impl RegistryId {
     /// Returns `true` if this identifies a system set.
     pub fn is_set(&self) -> bool {
         match self {
-            RegistryId::Set(_) => true,
+            RegId::Set(_) => true,
             _ => false,
         }
     }
 
     pub fn to_str(&self) -> &str {
         match self {
-            RegistryId::System(_) => "system",
-            RegistryId::Set(_) => "set",
+            RegId::System(_) => "system",
+            RegId::Set(_) => "set",
         }
     }
 }
 
-/// Pick a consistent ordering for a `RegistryId` pair.
-pub(crate) fn sort_pair(a: RegistryId, b: RegistryId) -> (RegistryId, RegistryId) {
+/// Pick a consistent ordering for a `RegId` pair.
+pub(crate) fn sort_pair(a: RegId, b: RegId) -> (RegId, RegId) {
     if a <= b {
         (a, b)
     } else {
@@ -55,13 +55,13 @@ pub(crate) enum Order {
 
 /// Information for system graph construction. See [`SystemRegistry`](crate::schedule::SystemRegistry).
 #[derive(Debug, Clone)]
-pub(crate) struct GraphConfig {
+pub(crate) struct Scheduling {
     pub(crate) name: Option<BoxedSystemLabel>,
     pub(crate) sets: HashSet<BoxedSystemLabel>,
     pub(crate) edges: Vec<(Order, BoxedSystemLabel)>,
 }
 
-impl GraphConfig {
+impl Scheduling {
     pub(crate) fn name(&self) -> Option<&BoxedSystemLabel> {
         self.name.as_ref()
     }
@@ -77,254 +77,254 @@ impl GraphConfig {
 
 /// Information for system graph construction. See [`SystemRegistry`](crate::schedule::SystemRegistry).
 #[derive(Debug, Clone)]
-pub(crate) struct IndexedGraphConfig {
-    pub(crate) sets: HashSet<RegistryId>,
-    pub(crate) edges: Vec<(Order, RegistryId)>,
+pub(crate) struct IndexedScheduling {
+    pub(crate) sets: HashSet<RegId>,
+    pub(crate) edges: Vec<(Order, RegId)>,
 }
 
-impl IndexedGraphConfig {
-    pub(crate) fn sets(&self) -> &HashSet<RegistryId> {
+impl IndexedScheduling {
+    pub(crate) fn sets(&self) -> &HashSet<RegId> {
         &self.sets
     }
 
-    pub(crate) fn edges(&self) -> &[(Order, RegistryId)] {
+    pub(crate) fn edges(&self) -> &[(Order, RegId)] {
         &self.edges
     }
 }
 
 /// Encapsulates a [`System`](crate::system::System) set and information on when it should run.
-pub struct SetDescriptor {
-    pub(crate) config: GraphConfig,
-    pub(crate) run_criteria: Vec<BoxedRunCondition>,
+pub struct ScheduledSet {
+    pub(crate) scheduling: Scheduling,
+    pub(crate) conditions: Vec<BoxedRunCondition>,
 }
 
-fn new_set(label: BoxedSystemLabel) -> SetDescriptor {
-    SetDescriptor {
-        config: GraphConfig {
+fn new_set(label: BoxedSystemLabel) -> ScheduledSet {
+    ScheduledSet {
+        scheduling: Scheduling {
             name: Some(label),
             sets: HashSet::new(),
             edges: Vec::new(),
         },
-        run_criteria: Vec::new(),
+        conditions: Vec::new(),
     }
 }
 
-/// Types that can be converted into a [`SetDescriptor`].
+/// Types that can be converted into a [`ScheduledSet`].
 ///
-/// Implementation is restricted to types the implement [`SystemLabel`] and matching trait objects.
-pub trait IntoSetDescriptor: sealed::IntoSetDescriptor {
-    fn into_descriptor(self) -> SetDescriptor;
+/// Implemented for types the implement [`SystemLabel`] and boxed trait objects.
+pub trait IntoScheduledSet: sealed::IntoScheduledSet {
+    fn schedule(self) -> ScheduledSet;
     /// Configures the system set to run under the set given by `label`.
-    fn to(self, label: impl SystemLabel) -> SetDescriptor;
+    fn to(self, label: impl SystemLabel) -> ScheduledSet;
     /// Configures the system set to run before `label`.
-    fn before<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor;
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet;
     /// Configures the system set to run after `label`.
-    fn after<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor;
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet;
     /// Configures the system set to run only if `condition` returns `true`.
-    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> SetDescriptor;
+    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSet;
 }
 
-impl<L> IntoSetDescriptor for L
+impl<L> IntoScheduledSet for L
 where
-    L: SystemLabel + sealed::IntoSetDescriptor,
+    L: SystemLabel + sealed::IntoScheduledSet,
 {
-    fn into_descriptor(self) -> SetDescriptor {
+    fn schedule(self) -> ScheduledSet {
         new_set(Box::new(self))
     }
 
-    fn to(self, label: impl SystemLabel) -> SetDescriptor {
+    fn to(self, label: impl SystemLabel) -> ScheduledSet {
         new_set(Box::new(self)).to(label)
     }
 
-    fn before<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor {
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet {
         new_set(Box::new(self)).before(label)
     }
 
-    fn after<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor {
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet {
         new_set(Box::new(self)).after(label)
     }
 
-    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> SetDescriptor {
+    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSet {
         new_set(Box::new(self)).iff(condition)
     }
 }
 
-impl IntoSetDescriptor for BoxedSystemLabel {
-    fn into_descriptor(self) -> SetDescriptor {
+impl IntoScheduledSet for BoxedSystemLabel {
+    fn schedule(self) -> ScheduledSet {
         new_set(self)
     }
 
-    fn to(self, label: impl SystemLabel) -> SetDescriptor {
+    fn to(self, label: impl SystemLabel) -> ScheduledSet {
         new_set(self).to(label)
     }
 
-    fn before<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor {
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet {
         new_set(self).before(label)
     }
 
-    fn after<M>(self, label: impl AsSystemLabel<M>) -> SetDescriptor {
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet {
         new_set(self).after(label)
     }
 
-    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> SetDescriptor {
+    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSet {
         new_set(self).iff(condition)
     }
 }
 
-impl IntoSetDescriptor for SetDescriptor {
-    fn into_descriptor(self) -> SetDescriptor {
+impl IntoScheduledSet for ScheduledSet {
+    fn schedule(self) -> ScheduledSet {
         self
     }
 
-    fn to(mut self, label: impl SystemLabel) -> SetDescriptor {
-        self.config.sets.insert(label.dyn_clone());
+    fn to(mut self, label: impl SystemLabel) -> ScheduledSet {
+        self.scheduling.sets.insert(label.dyn_clone());
         self
     }
 
-    fn before<M>(mut self, label: impl AsSystemLabel<M>) -> SetDescriptor {
-        self.config
+    fn before<M>(mut self, label: impl AsSystemLabel<M>) -> ScheduledSet {
+        self.scheduling
             .edges
             .push((Order::Before, label.as_system_label().dyn_clone()));
         self
     }
 
-    fn after<M>(mut self, label: impl AsSystemLabel<M>) -> SetDescriptor {
-        self.config
+    fn after<M>(mut self, label: impl AsSystemLabel<M>) -> ScheduledSet {
+        self.scheduling
             .edges
             .push((Order::After, label.as_system_label().dyn_clone()));
         self
     }
 
-    fn iff<P>(mut self, condition: impl IntoRunCondition<P>) -> SetDescriptor {
-        self.run_criteria
+    fn iff<P>(mut self, condition: impl IntoRunCondition<P>) -> ScheduledSet {
+        self.conditions
             .push(Box::new(IntoSystem::into_system(condition)));
         self
     }
 }
 
 /// Encapsulates a [`System`](crate::system::System) and information on when it should run.
-pub struct SystemDescriptor {
+pub struct ScheduledSystem {
     pub(crate) system: BoxedSystem,
-    pub(crate) config: GraphConfig,
-    pub(crate) run_criteria: Vec<BoxedRunCondition>,
+    pub(crate) scheduling: Scheduling,
+    pub(crate) conditions: Vec<BoxedRunCondition>,
 }
 
-fn new_system(system: BoxedSystem) -> SystemDescriptor {
-    SystemDescriptor {
+fn new_system(system: BoxedSystem) -> ScheduledSystem {
+    ScheduledSystem {
         system,
-        config: GraphConfig {
+        scheduling: Scheduling {
             name: None,
             sets: HashSet::new(),
             edges: Vec::new(),
         },
-        run_criteria: Vec::new(),
+        conditions: Vec::new(),
     }
 }
 
-/// Types that can be converted into a [`SystemDescriptor`].
+/// Types that can be converted into a [`ScheduledSystem`].
 ///
-/// Implementation is restricted to types that implement [`System<In=(), Out=()>`](crate::system::System)
-/// and matching trait objects.
-pub trait IntoSystemDescriptor<Params>: sealed::IntoSystemDescriptor<Params> {
-    fn into_descriptor(self) -> SystemDescriptor;
+/// Implemented for types that implement [`System<In=(), Out=()>`](crate::system::System)
+/// and boxed trait objects.
+pub trait IntoScheduledSystem<Params>: sealed::IntoScheduledSystem<Params> {
+    fn schedule(self) -> ScheduledSystem;
     /// Sets `name` as the unique label for this instance of the system.
-    fn named(self, name: impl SystemLabel) -> SystemDescriptor;
+    fn named(self, name: impl SystemLabel) -> ScheduledSystem;
     /// Configures the system to run under the set given by `label`.
-    fn to(self, label: impl SystemLabel) -> SystemDescriptor;
+    fn to(self, label: impl SystemLabel) -> ScheduledSystem;
     /// Configures the system to run before `label`.
-    fn before<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor;
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem;
     /// Configures the system to run after `label`.
-    fn after<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor;
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem;
     /// Configures the system to run only if `condition` returns `true`.
-    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> SystemDescriptor;
+    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSystem;
 }
 
-impl<Params, F> IntoSystemDescriptor<Params> for F
+impl<Params, F> IntoScheduledSystem<Params> for F
 where
-    F: IntoSystem<(), (), Params> + sealed::IntoSystemDescriptor<Params>,
+    F: IntoSystem<(), (), Params> + sealed::IntoScheduledSystem<Params>,
 {
-    fn into_descriptor(self) -> SystemDescriptor {
+    fn schedule(self) -> ScheduledSystem {
         new_system(Box::new(IntoSystem::into_system(self)))
     }
 
-    fn named(self, name: impl SystemLabel) -> SystemDescriptor {
+    fn named(self, name: impl SystemLabel) -> ScheduledSystem {
         new_system(Box::new(IntoSystem::into_system(self))).named(name)
     }
 
-    fn to(self, label: impl SystemLabel) -> SystemDescriptor {
+    fn to(self, label: impl SystemLabel) -> ScheduledSystem {
         new_system(Box::new(IntoSystem::into_system(self))).to(label)
     }
 
-    fn before<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
         new_system(Box::new(IntoSystem::into_system(self))).before(label)
     }
 
-    fn after<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
         new_system(Box::new(IntoSystem::into_system(self))).after(label)
     }
 
-    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> SystemDescriptor {
+    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSystem {
         new_system(Box::new(IntoSystem::into_system(self))).iff(condition)
     }
 }
 
-impl IntoSystemDescriptor<()> for BoxedSystem<(), ()> {
-    fn into_descriptor(self) -> SystemDescriptor {
+impl IntoScheduledSystem<()> for BoxedSystem<(), ()> {
+    fn schedule(self) -> ScheduledSystem {
         new_system(self)
     }
 
-    fn named(self, name: impl SystemLabel) -> SystemDescriptor {
+    fn named(self, name: impl SystemLabel) -> ScheduledSystem {
         new_system(self).named(name)
     }
 
-    fn to(self, label: impl SystemLabel) -> SystemDescriptor {
+    fn to(self, label: impl SystemLabel) -> ScheduledSystem {
         new_system(self).to(label)
     }
 
-    fn before<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
+    fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
         new_system(self).before(label)
     }
 
-    fn after<M>(self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
+    fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
         new_system(self).after(label)
     }
 
-    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> SystemDescriptor {
+    fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSystem {
         new_system(self).iff(condition)
     }
 }
 
-impl IntoSystemDescriptor<()> for SystemDescriptor {
-    fn into_descriptor(self) -> SystemDescriptor {
+impl IntoScheduledSystem<()> for ScheduledSystem {
+    fn schedule(self) -> ScheduledSystem {
         self
     }
 
-    fn named(mut self, name: impl SystemLabel) -> SystemDescriptor {
-        self.config.name = Some(name.dyn_clone());
+    fn named(mut self, name: impl SystemLabel) -> ScheduledSystem {
+        self.scheduling.name = Some(name.dyn_clone());
         self
     }
 
-    fn to(mut self, label: impl SystemLabel) -> SystemDescriptor {
-        self.config.sets.insert(label.dyn_clone());
+    fn to(mut self, label: impl SystemLabel) -> ScheduledSystem {
+        self.scheduling.sets.insert(label.dyn_clone());
         self
     }
 
-    fn before<M>(mut self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
-        self.config
+    fn before<M>(mut self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
+        self.scheduling
             .edges
             .push((Order::Before, label.as_system_label().dyn_clone()));
         self
     }
 
-    fn after<M>(mut self, label: impl AsSystemLabel<M>) -> SystemDescriptor {
-        self.config
+    fn after<M>(mut self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
+        self.scheduling
             .edges
             .push((Order::After, label.as_system_label().dyn_clone()));
         self
     }
 
-    fn iff<P>(mut self, condition: impl IntoRunCondition<P>) -> SystemDescriptor {
-        self.run_criteria
+    fn iff<P>(mut self, condition: impl IntoRunCondition<P>) -> ScheduledSystem {
+        self.conditions
             .push(Box::new(IntoSystem::into_system(condition)));
         self
     }
@@ -336,61 +336,61 @@ mod sealed {
         system::{BoxedSystem, IntoSystem},
     };
 
-    use super::{SetDescriptor, SystemDescriptor};
+    use super::{ScheduledSet, ScheduledSystem};
 
     // These traits are private because non-`()` systems cannot be used.
     // The type system doesn't allow for mixed type collections.
     // Maybe we could do funky transmutes on the fn pointers like we do for `CommandQueue`.
-    pub trait IntoSystemDescriptor<Params> {}
+    pub trait IntoScheduledSystem<Params> {}
 
-    impl<Params, F: IntoSystem<(), (), Params>> IntoSystemDescriptor<Params> for F {}
+    impl<Params, F: IntoSystem<(), (), Params>> IntoScheduledSystem<Params> for F {}
 
-    impl IntoSystemDescriptor<()> for BoxedSystem<(), ()> {}
+    impl IntoScheduledSystem<()> for BoxedSystem<(), ()> {}
 
-    impl IntoSystemDescriptor<()> for SystemDescriptor {}
+    impl IntoScheduledSystem<()> for ScheduledSystem {}
 
-    pub trait IntoSetDescriptor {}
+    pub trait IntoScheduledSet {}
 
-    impl<L: SystemLabel> IntoSetDescriptor for L {}
+    impl<L: SystemLabel> IntoScheduledSet for L {}
 
-    impl IntoSetDescriptor for BoxedSystemLabel {}
+    impl IntoScheduledSet for BoxedSystemLabel {}
 
-    impl IntoSetDescriptor for SetDescriptor {}
+    impl IntoScheduledSet for ScheduledSet {}
 }
 
-/// Generalizes system and system set descriptors.
-pub enum Descriptor {
-    System(SystemDescriptor),
-    Set(SetDescriptor),
+/// Enum for pseudo-type elision of scheduled systems and system sets.
+pub enum Scheduled {
+    System(ScheduledSystem),
+    Set(ScheduledSet),
 }
 
-impl Descriptor {
+impl Scheduled {
     fn name(&self) -> BoxedSystemLabel {
         match self {
-            Self::System(system) => system.config.name().unwrap().dyn_clone(),
-            Self::Set(set) => set.config.name().unwrap().dyn_clone(),
+            Self::System(system) => system.scheduling.name().unwrap().dyn_clone(),
+            Self::Set(set) => set.scheduling.name().unwrap().dyn_clone(),
         }
     }
 }
 
-impl SetDescriptor {
-    pub fn into_descriptor_enum(self) -> Descriptor {
-        Descriptor::Set(self)
+impl ScheduledSet {
+    pub fn into_enum(self) -> Scheduled {
+        Scheduled::Set(self)
     }
 }
 
-impl SystemDescriptor {
-    pub fn into_descriptor_enum(self) -> Descriptor {
-        Descriptor::System(self)
+impl ScheduledSystem {
+    pub fn into_enum(self) -> Scheduled {
+        Scheduled::System(self)
     }
 }
 
 #[doc(hidden)]
 /// Describes multiple systems and system sets.
-pub struct Group(Vec<Descriptor>);
+pub struct Group(Vec<Scheduled>);
 
 impl Group {
-    pub fn new(mut vec: Vec<Descriptor>) -> Self {
+    pub fn new(mut vec: Vec<Scheduled>) -> Self {
         Self(vec)
     }
 
@@ -398,11 +398,11 @@ impl Group {
     pub fn to(mut self, label: impl SystemLabel) -> Self {
         for node in self.0.iter_mut() {
             match node {
-                Descriptor::System(system) => {
-                    system.config.sets.insert(label.dyn_clone());
+                Scheduled::System(system) => {
+                    system.scheduling.sets.insert(label.dyn_clone());
                 }
-                Descriptor::Set(set) => {
-                    set.config.sets.insert(label.dyn_clone());
+                Scheduled::Set(set) => {
+                    set.scheduling.sets.insert(label.dyn_clone());
                 }
             };
         }
@@ -414,11 +414,16 @@ impl Group {
     pub fn before(mut self, label: impl SystemLabel) -> Self {
         for node in self.0.iter_mut() {
             match node {
-                Descriptor::System(system) => {
-                    system.config.edges.push((Order::Before, label.dyn_clone()));
+                Scheduled::System(system) => {
+                    system
+                        .scheduling
+                        .edges
+                        .push((Order::Before, label.dyn_clone()));
                 }
-                Descriptor::Set(set) => {
-                    set.config.edges.push((Order::Before, label.dyn_clone()));
+                Scheduled::Set(set) => {
+                    set.scheduling
+                        .edges
+                        .push((Order::Before, label.dyn_clone()));
                 }
             }
         }
@@ -430,11 +435,14 @@ impl Group {
     pub fn after(mut self, label: impl SystemLabel) -> Self {
         for node in self.0.iter_mut() {
             match node {
-                Descriptor::System(system) => {
-                    system.config.edges.push((Order::After, label.dyn_clone()));
+                Scheduled::System(system) => {
+                    system
+                        .scheduling
+                        .edges
+                        .push((Order::After, label.dyn_clone()));
                 }
-                Descriptor::Set(set) => {
-                    set.config.edges.push((Order::After, label.dyn_clone()));
+                Scheduled::Set(set) => {
+                    set.scheduling.edges.push((Order::After, label.dyn_clone()));
                 }
             }
         }
@@ -444,8 +452,8 @@ impl Group {
 }
 
 impl IntoIterator for Group {
-    type Item = Descriptor;
-    type IntoIter = std::vec::IntoIter<Descriptor>;
+    type Item = Scheduled;
+    type IntoIter = std::vec::IntoIter<Scheduled>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -454,19 +462,19 @@ impl IntoIterator for Group {
 
 #[doc(hidden)]
 /// Describes multiple systems and system sets that are ordered in a sequence.
-pub struct Chain(Vec<Descriptor>);
+pub struct Chain(Vec<Scheduled>);
 
 impl Chain {
-    pub fn new(mut vec: Vec<Descriptor>) -> Self {
+    pub fn new(mut vec: Vec<Scheduled>) -> Self {
         let n = vec.len();
         let names = vec.iter().skip(1).map(|c| c.name()).collect::<Vec<_>>();
         for (node, next_node) in vec.iter_mut().take(n - 1).zip(names.into_iter()) {
             match node {
-                Descriptor::System(system) => {
-                    system.config.edges.push((Order::Before, next_node));
+                Scheduled::System(system) => {
+                    system.scheduling.edges.push((Order::Before, next_node));
                 }
-                Descriptor::Set(set) => {
-                    set.config.edges.push((Order::Before, next_node));
+                Scheduled::Set(set) => {
+                    set.scheduling.edges.push((Order::Before, next_node));
                 }
             }
         }
@@ -478,11 +486,11 @@ impl Chain {
     pub fn to(mut self, label: impl SystemLabel) -> Self {
         for node in self.0.iter_mut() {
             match node {
-                Descriptor::System(system) => {
-                    system.config.sets.insert(label.dyn_clone());
+                Scheduled::System(system) => {
+                    system.scheduling.sets.insert(label.dyn_clone());
                 }
-                Descriptor::Set(set) => {
-                    set.config.sets.insert(label.dyn_clone());
+                Scheduled::Set(set) => {
+                    set.scheduling.sets.insert(label.dyn_clone());
                 }
             };
         }
@@ -494,11 +502,16 @@ impl Chain {
     pub fn before(mut self, label: impl SystemLabel) -> Self {
         if let Some(last) = self.0.last_mut() {
             match last {
-                Descriptor::System(system) => {
-                    system.config.edges.push((Order::Before, label.dyn_clone()));
+                Scheduled::System(system) => {
+                    system
+                        .scheduling
+                        .edges
+                        .push((Order::Before, label.dyn_clone()));
                 }
-                Descriptor::Set(set) => {
-                    set.config.edges.push((Order::Before, label.dyn_clone()));
+                Scheduled::Set(set) => {
+                    set.scheduling
+                        .edges
+                        .push((Order::Before, label.dyn_clone()));
                 }
             }
         }
@@ -510,11 +523,14 @@ impl Chain {
     pub fn after(mut self, label: impl SystemLabel) -> Self {
         if let Some(first) = self.0.first_mut() {
             match first {
-                Descriptor::System(system) => {
-                    system.config.edges.push((Order::After, label.dyn_clone()));
+                Scheduled::System(system) => {
+                    system
+                        .scheduling
+                        .edges
+                        .push((Order::After, label.dyn_clone()));
                 }
-                Descriptor::Set(set) => {
-                    set.config.edges.push((Order::After, label.dyn_clone()));
+                Scheduled::Set(set) => {
+                    set.scheduling.edges.push((Order::After, label.dyn_clone()));
                 }
             }
         }
@@ -524,26 +540,30 @@ impl Chain {
 }
 
 impl IntoIterator for Chain {
-    type Item = Descriptor;
-    type IntoIter = std::vec::IntoIter<Descriptor>;
+    type Item = Scheduled;
+    type IntoIter = std::vec::IntoIter<Scheduled>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
     }
 }
 
-#[macro_export]
 /// A mixed group of systems and system sets.
+#[macro_export]
 macro_rules! group {
     ($($x:expr),+ $(,)?) => {
-        bevy_ecs::schedule::Group::new(vec![$(($x).into_descriptor().into_descriptor_enum()),+])
+        bevy_ecs::schedule::Group::new(vec![$(($x).schedule().into_enum()),+])
     };
 }
 
-#[macro_export]
+pub use group;
+
 /// A mixed group of systems and system sets, ordered in a sequence.
+#[macro_export]
 macro_rules! chain {
     ($($x:expr),+ $(,)?) => {
-        bevy_ecs::schedule::Chain::new(vec![$(($x).into_descriptor().into_descriptor_enum()),+])
+        bevy_ecs::schedule::Chain::new(vec![$(($x).schedule().into_enum()),+])
     };
 }
+
+pub use chain;

@@ -8,15 +8,11 @@ use crate::{
 };
 use std::borrow::Cow;
 
-/// A [`System`] that chains two systems together, creating a new system that routes the output of
-/// the first system into the input of the second system, then returns the output of the second system.
+/// Bundles two systems together, creating a new [`System`] that routes the output of the first system
+/// into the input of the second system, then returns the output of the second system.
 ///
-/// Given two systems, A and B, A can be chained with B as `A.chain(B)` if the output type of A
-/// matches the input type of B.
-///
-/// Note: A [`FunctionSystem`](crate::system::FunctionSystem)'s output is the function
-/// return type and its input is the argument wrapped with [`In`](crate::system::In)
-/// or `()` if there is none.
+/// Given two systems, A and B, A can be chained with B using `A.chain(B)` if the A's [`Out`](System::Out)
+/// matches B's [`In`](System::In) type.
 ///
 /// # Examples
 ///

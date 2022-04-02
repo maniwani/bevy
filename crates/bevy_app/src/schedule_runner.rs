@@ -10,16 +10,16 @@ use std::{cell::RefCell, rc::Rc};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{prelude::*, JsCast};
 
-/// Determines the method used to run an [App]'s  [`Schedule`](bevy_ecs::schedule::Schedule).
+/// Determines the method used to run an [`App`] schedule.
 #[derive(Copy, Clone, Debug)]
 pub enum RunMode {
-    /// Indicates that the [`App`]'s schedule should run repeatedly.
+    /// The schedule should be run repeatedly.
     Loop {
-        /// Minimum duration to wait after a schedule has completed before repeating.
+        /// Minimum duration to wait after an update has completed before running another.
         /// A value of [`None`] will not wait.
         wait: Option<Duration>,
     },
-    /// Indicates that the [`App`]'s schedule should run only once.
+    /// The schedule should be run a single time.
     Once,
 }
 
@@ -54,8 +54,7 @@ impl ScheduleRunnerSettings {
     }
 }
 
-/// Configures an `App` to run its [`Schedule`](bevy_ecs::schedule::Schedule) according to a given
-/// [`RunMode`]
+/// Configures an [`App`] to run its schedule according to a given [`RunMode`].
 #[derive(Default)]
 pub struct ScheduleRunnerPlugin;
 

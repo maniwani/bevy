@@ -16,32 +16,78 @@ pub mod prelude {
     //! The Bevy Core Prelude.
     #[doc(hidden)]
     pub use crate::{
-        DefaultTaskPoolOptions, FixedTime, FixedTimestep, FixedTimestepState, Name, Time, Timer,
+        CoreSet, DefaultTaskPoolOptions, FixedTime, FixedTimestepState, Name, Time, Timer,
     };
 }
 
-use bevy_app::prelude::*;
+use bevy_app::{prelude::*, AppSystem};
 use bevy_ecs::{
     entity::Entity,
-    schedule::{IntoSystemDescriptor, SystemLabel},
+    schedule::{apply_buffers, chain, IntoScheduledSet, IntoScheduledSystem, SystemLabel},
 };
 use bevy_utils::HashSet;
+
 use std::ops::Range;
 
-/// Adds core functionality to Apps.
+/// [`Plugin`] that adds a standard system execution sequence.
 #[derive(Default)]
 pub struct CorePlugin;
 
-/// A `SystemLabel` enum for ordering systems relative to core Bevy systems.
+/// Systems sets comprising the standard execution sequence.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+pub enum CoreSet {
+    /// Systems that run before the systems in the other core sets (but after [`Time`] is updated).
+    First,
+    /// Systems that run with the fixed timestep. Intended for most gameplay systems (e.g. physics).
+    ///
+    /// **Note:** Fixed timestep does not mean fixed *interval*. This set can repeat several times in a single frame. Use [`FixedTime`] instead of [`Time`] to ensure correct behavior.
+    FixedUpdate,
+    /// Systems that run before systems in [`Update`](CoreSet::Update).
+    /// Intended for systems that need to perform setup for systems in [`Update`](CoreSet::Update).
+    PreUpdate,
+    /// Systems that run each frame.
+    ///
+    /// **Note:** By default, systems and sets with no parent set specified are added here.
+    Update,
+    /// Systems that run after systems in [`Update`](CoreSet::Update).
+    /// Intended for systems that need to process the results of systems in [`Update`](CoreSet::Update).
+    PostUpdate,
+    /// Systems that run after the systems in the other core sets.
+    Last,
+}
+
+/// Systems comprising the standard execution sequence.
+#[doc(hidden)]
 #[derive(Debug, PartialEq, Eq, Clone, Hash, SystemLabel)]
 pub enum CoreSystem {
-    /// Advances time. Any system that interacts with the [`Time`] resource should run after this.
+    /// Advances [`Time`]. First thing that runs in a frame.
     Time,
+    /// Advances [`FixedTime`] and runs the systems under [`FixedUpdate`](CoreSet::FixedUpdate).
+    FixedUpdate,
+    /// Calls [`apply_buffers`] after the systems under [`First`](CoreSet::First).
+    ApplyFirst,
+    /// Calls [`apply_buffers`] after the systems under [`FixedUpdate`](CoreSet::FixedUpdate).
+    ApplyFixedUpdate,
+    /// Calls [`apply_buffers`] after the systems under [`PreUpdate`](CoreSet::PreUpdate).
+    ApplyPreUpdate,
+    /// Calls [`apply_buffers`] after the systems under [`Update`](CoreSet::Update).
+    ApplyUpdate,
+    /// Calls [`apply_buffers`] after the systems under [`PostUpdate`](CoreSet::PostUpdate).
+    ApplyPostUpdate,
+    /// Calls [`apply_buffers`] after the systems under [`Last`](CoreSet::Last).
+    ApplyLast,
+}
+
+/// Internal system sets needed to bypass limitations with [`apply_buffers`].
+#[doc(hidden)]
+#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+pub(crate) enum CoreInternalSet {
+    /// Encompasses [`CoreSet::FixedUpdate`] and [`CoreSystem::ApplyFixedUpdate`].
+    FixedUpdate,
 }
 
 impl Plugin for CorePlugin {
     fn build(&self, app: &mut App) {
-        // Setup the default bevy task pools
         app.world
             .get_resource::<DefaultTaskPoolOptions>()
             .cloned()
@@ -57,11 +103,31 @@ impl Plugin for CorePlugin {
             .register_type::<Name>()
             .register_type::<Range<f32>>()
             .register_type::<Timer>()
-            // time system is added to the "AtStart" set to ensure it runs before other systems
-            // in CoreStage::First
-            .add_system_to_stage(
-                CoreStage::First,
-                time_system.at_start().label(CoreSystem::Time),
+            .add_many(
+                chain![
+                    update_time.named(CoreSystem::Time),
+                    CoreSet::First,
+                    apply_buffers.named(CoreSystem::ApplyFirst),
+                    fixed_update.named(CoreSystem::FixedUpdate),
+                    CoreSet::PreUpdate,
+                    apply_buffers.named(CoreSystem::ApplyPreUpdate),
+                    CoreSet::Update,
+                    apply_buffers.named(CoreSystem::ApplyUpdate),
+                    CoreSet::PostUpdate,
+                    apply_buffers.named(CoreSystem::ApplyPostUpdate),
+                    CoreSet::Last,
+                    apply_buffers.named(CoreSystem::ApplyLast),
+                ]
+                .to(AppSet::Update)
+                .after(AppSet::UpdateEvents)
+                .before(AppSystem::ClearTrackers),
+            )
+            .add_many(
+                chain![
+                    CoreSet::FixedUpdate,
+                    apply_buffers.named(CoreSystem::ApplyFixedUpdate),
+                ]
+                .to(CoreInternalSet::FixedUpdate),
             );
 
         register_rust_types(app);

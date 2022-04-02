@@ -1,7 +1,7 @@
 use crate::{
     self as bevy_ecs,
     change_detection::Mut,
-    schedule::{run_systems, SystemLabel},
+    schedule::{run_scheduled, SystemLabel},
     system::Res,
     world::World,
 };
@@ -13,15 +13,19 @@ use thiserror::Error;
 pub trait State: 'static + Send + Sync + Clone + PartialEq + Eq + Debug + Hash {}
 impl<T> State for T where T: 'static + Send + Sync + Clone + PartialEq + Eq + Debug + Hash {}
 
-/// A [`SystemLabel`] for a state's "on enter" transition.
+/// A [`SystemLabel`] for the system set that runs during a state's "on enter" transition.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, SystemLabel)]
 pub struct OnEnter<S: State>(pub S);
 
-/// A [`SystemLabel`] for a state's "on exit" transition.
+/// A [`SystemLabel`] for the system set that runs during a state's "on exit" transition.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, SystemLabel)]
 pub struct OnExit<S: State>(pub S);
 
-/// A simple finite-state machine.
+/// A simple finite-state machine whose transitions (enter and exit) can have associated system sets
+/// ([`OnEnter(s)`] and [`OnExit(s)`]).
+///
+/// A state transition can be queued with [`queue_transition`](Fsm::queue_transition), and it will
+/// be applied the next time an [`apply_state_transition::<S>`] system runs.
 #[derive(Debug, Clone)]
 pub struct Fsm<S: State> {
     current_state: S,
@@ -30,6 +34,7 @@ pub struct Fsm<S: State> {
 }
 
 impl<S: State> Fsm<S> {
+    /// Constructs a new `Fsm` that starts in the specified initial state.
     pub fn new(initial_state: S) -> Self {
         Self {
             current_state: initial_state,
@@ -55,59 +60,21 @@ impl<S: State> Fsm<S> {
 
     /// Sets `state` to become the machine's next state.
     ///
-    /// # Errors
-    ///
-    /// Errors if a transition has already been queued or transitions leads to same state.
-    pub fn queue_transition(&mut self, state: S) -> Result<(), StateTransitionError> {
-        if *self.current_state() == state {
-            return Err(StateTransitionError::AlreadyInState);
-        }
-
-        if self.next_state.is_some() {
-            return Err(StateTransitionError::TransitionAlreadyQueued);
-        }
-
-        self.next_state = Some(state);
-
-        Ok(())
-    }
-}
-
-/// Returns `true` if the machine exists.
-pub fn state_exists<S: State>() -> impl FnMut(Option<Res<Fsm<S>>>) -> bool {
-    move |fsm: Option<Res<Fsm<S>>>| fsm.is_some()
-}
-
-/// Returns `true` if the machine is currently in `state`.
-pub fn state_equals<S: State>(state: S) -> impl FnMut(Res<Fsm<S>>) -> bool {
-    move |fsm: Res<Fsm<S>>| *fsm.current_state() == state
-}
-
-/// Returns `true` if the machine exists and is currently in `state`.
-pub fn state_exists_and_equals<S: State>(state: S) -> impl FnMut(Option<Res<Fsm<S>>>) -> bool {
-    move |fsm: Option<Res<Fsm<S>>>| match fsm {
-        Some(fsm) => *fsm.current_state() == state,
-        None => false,
+    /// If a transition was already queued, replaces and returns the queued state.
+    pub fn queue_transition(&mut self, state: S) -> Option<S> {
+        std::mem::replace(&mut self.next_state, Some(state))
     }
 }
 
 /// If state transition queued, applies it, then runs the systems under [`OnExit(old_state)`]
-/// and [`OnEnter(new_state)`].
+/// and then [`OnEnter(new_state)`].
 pub fn apply_state_transition<S: State>(world: &mut World) {
     world.resource_scope(|world, mut fsm: Mut<Fsm<S>>| {
         if let Some(new_state) = fsm.next_state.take() {
             let old_state = std::mem::replace(&mut fsm.current_state, new_state.clone());
             fsm.prev_state = Some(old_state.clone());
-            run_systems(OnExit(old_state), world);
-            run_systems(OnEnter(new_state), world);
+            run_scheduled(OnExit(old_state), world);
+            run_scheduled(OnEnter(new_state), world);
         }
     });
-}
-
-#[derive(Debug, Error)]
-pub enum StateTransitionError {
-    #[error("queued transition to same state")]
-    AlreadyInState,
-    #[error("queued transition when one was already queued")]
-    TransitionAlreadyQueued,
 }

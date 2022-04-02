@@ -103,13 +103,13 @@ impl Time {
         self.startup
     }
 
-    /// Returns the [`Instant`] when [`update`](Time::update) was first called, if it exists.
+    /// Returns the [`Instant`] when [`update`](Self::update) was first called, if it exists.
     #[inline]
     pub fn first_update(&self) -> Option<Instant> {
         self.first_update
     }
 
-    /// Returns the [`Instant`] when [`update`](Time::update) was last called, if it exists.
+    /// Returns the [`Instant`] when [`update`](Self::update) was last called, if it exists.
     #[inline]
     pub fn last_update(&self) -> Option<Instant> {
         self.last_update
@@ -153,73 +153,73 @@ impl Time {
         self.relative_speed = ratio;
     }
 
-    /// Returns how much time has advanced since the last [`update`](Time::update), as a [`Duration`].
+    /// Returns how much time has advanced since the last [`update`](Self::update), as a [`Duration`].
     #[inline]
     pub fn delta(&self) -> Duration {
         self.delta
     }
 
-    /// Returns how much time has advanced since the last [`update`](Time::update), as [`f32`] seconds.
+    /// Returns how much time has advanced since the last [`update`](Self::update), as [`f32`] seconds.
     #[inline]
     pub fn delta_seconds(&self) -> f32 {
         self.delta_seconds
     }
 
-    /// Returns how much time has advanced since the last [`update`](Time::update), as [`f64`] seconds.
+    /// Returns how much time has advanced since the last [`update`](Self::update), as [`f64`] seconds.
     #[inline]
     pub fn delta_seconds_f64(&self) -> f64 {
         self.delta_seconds_f64
     }
 
-    /// Returns the exact CPU time elapsed since the last [`update`](Time::update), as a [`Duration`].
+    /// Returns the exact CPU time elapsed since the last [`update`](Self::update), as a [`Duration`].
     #[inline]
     pub fn raw_delta(&self) -> Duration {
         self.raw_delta
     }
 
-    /// Returns the exact CPU time elapsed since the last [`update`](Time::update), as [`f32`] seconds.
+    /// Returns the exact CPU time elapsed since the last [`update`](Self::update), as [`f32`] seconds.
     #[inline]
     pub fn raw_delta_seconds(&self) -> f32 {
         self.raw_delta_seconds
     }
 
-    /// Returns the exact CPU time elapsed since the last [`update`](Time::update), as [`f64`] seconds.
+    /// Returns the exact CPU time elapsed since the last [`update`](Self::update), as [`f64`] seconds.
     #[inline]
     pub fn raw_delta_seconds_f64(&self) -> f64 {
         self.raw_delta_seconds_f64
     }
 
-    /// Returns how much time has advanced since [`startup`](Time::startup), as [`Duration`].
+    /// Returns how much time has advanced since [`startup`](Self::startup), as [`Duration`].
     #[inline]
     pub fn elapsed_since_startup(&self) -> Duration {
         self.elapsed_since_startup
     }
 
-    /// Returns how much time has advanced since [`startup`](Time::startup), as [`f32`] seconds.
+    /// Returns how much time has advanced since [`startup`](Self::startup), as [`f32`] seconds.
     #[inline]
     pub fn seconds_since_startup(&self) -> f32 {
         self.seconds_since_startup
     }
 
-    /// Returns how much time has advanced since [`startup`](Time::startup), as [`f64`] seconds.
+    /// Returns how much time has advanced since [`startup`](Self::startup), as [`f64`] seconds.
     #[inline]
     pub fn seconds_since_startup_f64(&self) -> f64 {
         self.seconds_since_startup_f64
     }
 
-    /// Returns the exact CPU time elapsed since [`startup`](Time::startup), as [`Duration`].
+    /// Returns the exact CPU time elapsed since [`startup`](Self::startup), as [`Duration`].
     #[inline]
     pub fn raw_elapsed_since_startup(&self) -> Duration {
         self.raw_elapsed_since_startup
     }
 
-    /// Returns the exact CPU time elapsed since [`startup`](Time::startup), as [`f32`] seconds.
+    /// Returns the exact CPU time elapsed since [`startup`](Self::startup), as [`f32`] seconds.
     #[inline]
     pub fn raw_seconds_since_startup(&self) -> f32 {
         self.raw_seconds_since_startup
     }
 
-    /// Returns the exact CPU time elapsed since [`startup`](Time::startup), as [`f64`] seconds.
+    /// Returns the exact CPU time elapsed since [`startup`](Self::startup), as [`f64`] seconds.
     #[inline]
     pub fn raw_seconds_since_startup_f64(&self) -> f64 {
         self.raw_seconds_since_startup_f64

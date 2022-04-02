@@ -29,15 +29,14 @@ pub mod prelude {
         event::{EventReader, EventWriter},
         query::{Added, AnyOf, ChangeTrackers, Changed, Or, QueryState, With, Without},
         schedule::{
-            apply_buffers, apply_state_transition, Fsm, IntoSetDescriptor, IntoSystemDescriptor,
-            State, SystemLabel,
+            apply_buffers, apply_state_transition, chain, group, Fsm, IntoScheduledSet,
+            IntoScheduledSystem, State, SystemLabel,
         },
         system::{
             Commands, In, IntoChainSystem, IntoSystem, Local, NonSend, NonSendMut, ParamSet, Query,
             RemovedComponents, Res, ResMut, System,
         },
         world::{FromWorld, Mut, World},
-        {chain, group},
     };
 }
 

@@ -1,9 +1,11 @@
 use crate::system::{BoxedSystem, NonSend, Res, Resource};
 
+use super::{Fsm, State};
+
 pub type BoxedRunCondition = BoxedSystem<(), bool>;
 
-/// Implemented for [`System`](crate::system::System) types that have read-only data access,
-/// have `In=()`, and return `bool`.
+/// Implemented for functions and closures that convert into [`System<In=(), Out=bool>`](crate::system::System) types
+/// that have read-only data access.
 pub trait IntoRunCondition<Params>: sealed::IntoRunCondition<Params> {}
 
 impl<Params, F> IntoRunCondition<Params> for F where F: sealed::IntoRunCondition<Params> {}
@@ -26,7 +28,8 @@ mod sealed {
     }
 }
 
-/// Returns `true` if the resource exists.
+/// Convenience function that generates an [`IntoRunCondition`]-compatible closure that returns `true`
+/// if the resource exists.
 pub fn resource_exists<T>() -> impl FnMut(Option<Res<T>>) -> bool
 where
     T: Resource,
@@ -34,11 +37,12 @@ where
     move |res: Option<Res<T>>| res.is_some()
 }
 
-/// Returns `true` if the resource is equal to `value`.
+/// Convenience function that generates an [`IntoRunCondition`]-compatible closure that returns `true`
+/// if the resource is equal to `value`.
 ///
 /// # Panics
 ///
-/// Panics if the resource does not exist.
+/// The condition will panic if the resource does not exist.
 pub fn resource_equals<T>(value: T) -> impl FnMut(Res<T>) -> bool
 where
     T: Resource + PartialEq,
@@ -46,7 +50,8 @@ where
     move |res: Res<T>| *res == value
 }
 
-/// Returns `true` if the resource exists and is equal to `value`.
+/// Convenience function that generates an [`IntoRunCondition`]-compatible closure that returns `true`
+/// if the resource exists and is equal to `value`.
 pub fn resource_exists_and_equals<T>(value: T) -> impl FnMut(Option<Res<T>>) -> bool
 where
     T: Resource + PartialEq,
@@ -57,7 +62,8 @@ where
     }
 }
 
-/// Returns `true` if the non-[`Send`] resource exists.
+/// Convenience function that generates an [`IntoRunCondition`]-compatible closure that returns `true`
+/// if the non-[`Send`] resource exists.
 pub fn non_send_resource_exists<T>() -> impl FnMut(Option<NonSend<T>>) -> bool
 where
     T: Resource,
@@ -65,11 +71,12 @@ where
     move |res: Option<NonSend<T>>| res.is_some()
 }
 
-/// Returns `true` if the non-`Send` resource is equal to `value`.
+/// Convenience function that generates an [`IntoRunCondition`]-compatible closure that returns `true`
+/// if the non-`Send` resource is equal to `value`.
 ///
 /// # Panics
 ///
-/// Panics if the resource does not exist.
+/// The condition will panic if the resource does not exist.
 pub fn non_send_resource_equals<T>(value: T) -> impl FnMut(NonSend<T>) -> bool
 where
     T: Resource + PartialEq,
@@ -77,13 +84,41 @@ where
     move |res: NonSend<T>| *res == value
 }
 
-/// Returns `true` if the non-[`Send`] resource exists and is equal to `value`.
+/// Convenience function that generates an [`IntoRunCondition`]-compatible closure that returns `true`
+/// if the non-[`Send`] resource exists and is equal to `value`.
 pub fn non_send_resource_exists_and_equals<T>(value: T) -> impl FnMut(Option<NonSend<T>>) -> bool
 where
     T: Resource + PartialEq,
 {
     move |res: Option<NonSend<T>>| match res {
         Some(res) => *res == value,
+        None => false,
+    }
+}
+
+/// Convenience function that generates an [`IntoRunCondition`]-compatible closure that returns `true`
+/// if the state machine exists.
+pub fn state_machine_exists<S: State>() -> impl FnMut(Option<Res<Fsm<S>>>) -> bool {
+    move |fsm: Option<Res<Fsm<S>>>| fsm.is_some()
+}
+
+/// Convenience function that generates an [`IntoRunCondition`]-compatible closure that returns `true`
+/// if the state machine is currently in `state`.
+///
+/// # Panics
+///
+/// The condition will panic if the resource does not exist.
+pub fn state_equals<S: State>(state: S) -> impl FnMut(Res<Fsm<S>>) -> bool {
+    move |fsm: Res<Fsm<S>>| *fsm.current_state() == state
+}
+
+/// Convenience function that generates an [`IntoRunCondition`]-compatible closure that returns `true`
+/// if the state machine exists and is currently in `state`.
+pub fn state_machine_exists_and_equals<S: State>(
+    state: S,
+) -> impl FnMut(Option<Res<Fsm<S>>>) -> bool {
+    move |fsm: Option<Res<Fsm<S>>>| match fsm {
+        Some(fsm) => *fsm.current_state() == state,
         None => false,
     }
 }

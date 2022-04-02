@@ -1,20 +1,16 @@
 use bevy_ecs::{
-    schedule::ShouldRun,
-    system::ResMut,
+    change_detection::Mut,
+    schedule::run_scheduled,
     world::{FromWorld, World},
 };
 use bevy_utils::{Duration, Instant};
 
-use crate::Time;
+use crate::{CoreInternalSet, Time};
 
-/// The default step size used by [`FixedTimestep`].
-// 60Hz is a popular tick rate, but it can't be expressed as an exact float.
-// The nearby power of two, 64Hz, is more stable for numerical integration.
-pub const DEFAULT_TIMESTEP: Duration = Duration::from_micros(15625); // 64Hz
-
-/// Tracks how much time has advanced since its previous update and since the app was started.
+/// A [`Time`]-substitute that only advances in increments of a constant [`delta`](FixedTime::delta).
+/// Intended for systems running under the [`FixedUpdate`](crate::CoreSet::FixedUpdate) system set.
 ///
-/// It's just like [`Time`] (and internally coupled to it), except it advances in fixed increments.
+/// [`FixedTime`] is synchronized to [`Time`].
 #[derive(Debug, Clone)]
 pub struct FixedTime {
     startup: Instant,
@@ -30,16 +26,14 @@ pub struct FixedTime {
 
 impl FromWorld for FixedTime {
     fn from_world(world: &mut World) -> Self {
-        let time = world
-            .get_resource::<Time>()
-            .expect("FixedTime depends on Time.");
+        let time = world.resource::<Time>();
         Self {
             startup: time.startup(),
             first_update: None,
             last_update: None,
-            delta: DEFAULT_TIMESTEP,
-            delta_seconds: DEFAULT_TIMESTEP.as_secs_f32(),
-            delta_seconds_f64: DEFAULT_TIMESTEP.as_secs_f64(),
+            delta: Self::DEFAULT_STEP_SIZE,
+            delta_seconds: Self::DEFAULT_STEP_SIZE.as_secs_f32(),
+            delta_seconds_f64: Self::DEFAULT_STEP_SIZE.as_secs_f64(),
             elapsed_since_startup: Duration::ZERO,
             seconds_since_startup: 0.0,
             seconds_since_startup_f64: 0.0,
@@ -48,15 +42,20 @@ impl FromWorld for FixedTime {
 }
 
 impl FixedTime {
-    /// Constructs a new `FixedTime` instance with a specific timestep [`Duration`] and startup [`Instant`].
-    pub fn new(delta: Duration, startup: Instant) -> Self {
+    /// The default step size.
+    // 60Hz is a popular tick rate, but it can't be expressed as an exact float.
+    // The nearby power of two, 64Hz, is more stable for numerical integration.
+    pub const DEFAULT_STEP_SIZE: Duration = Duration::from_micros(15625); // 64Hz
+
+    /// Constructs a new `FixedTime` instance with a specific step size [`Duration`] and startup [`Instant`].
+    pub fn new(step_size: Duration, startup: Instant) -> Self {
         Self {
             startup,
             first_update: None,
             last_update: None,
-            delta,
-            delta_seconds: delta.as_secs_f32(),
-            delta_seconds_f64: delta.as_secs_f64(),
+            delta: step_size,
+            delta_seconds: step_size.as_secs_f32(),
+            delta_seconds_f64: step_size.as_secs_f64(),
             elapsed_since_startup: Duration::ZERO,
             seconds_since_startup: 0.0,
             seconds_since_startup_f64: 0.0,
@@ -69,7 +68,7 @@ impl FixedTime {
         self.update_with_instant(now);
     }
 
-    /// Advances time by [`FixedTime::delta`] and records the [`Instant`] it happened.
+    /// Advances time by [`delta`](Self::delta) and records the [`Instant`] it happened.
     pub(crate) fn update_with_instant(&mut self, instant: Instant) {
         if self.last_update.is_none() {
             self.first_update = Some(instant);
@@ -86,91 +85,94 @@ impl FixedTime {
         self.startup
     }
 
-    /// Returns the [`Instant`] when [`update`](FixedTime::update) was first called, if it exists.
+    /// Returns the [`Instant`] when [`update`](Self::update) was first called, if it exists.
     #[inline]
     pub fn first_update(&self) -> Option<Instant> {
         self.first_update
     }
 
-    /// Returns the [`Instant`] when [`update`](FixedTime::update) was last called, if it exists.
+    /// Returns the [`Instant`] when [`update`](Self::update) was last called, if it exists.
     #[inline]
     pub fn last_update(&self) -> Option<Instant> {
         self.last_update
     }
 
-    /// Returns how much time advances with each [`update`](FixedTime::update), as a [`Duration`].
+    /// Returns how much time advances with each [`update`](Self::update), as a [`Duration`].
     #[inline]
     pub fn delta(&self) -> Duration {
         self.delta
     }
 
-    /// Returns how much time advances with each [`update`](FixedTime::update), as [`f32`] seconds.
+    /// Returns how much time advances with each [`update`](Self::update), as [`f32`] seconds.
     #[inline]
     pub fn delta_seconds(&self) -> f32 {
         self.delta_seconds
     }
 
-    /// Returns how much time advances with each [`update`](FixedTime::update), as [`f64`] seconds.
+    /// Returns how much time advances with each [`update`](Self::update), as [`f64`] seconds.
     #[inline]
     pub fn delta_seconds_f64(&self) -> f64 {
         self.delta_seconds_f64
     }
 
-    /// Sets the timestep to `delta`, given as [`Duration`].
+    /// Sets [`delta`](Self::delta) to the given step size ([`Duration`]).
     ///
-    /// Note: Outside of startup, users should prefer using [`Time::set_relative_speed`]
-    /// as changing the timestep itself will likely change system behavior.
+    /// **Note:** Outside of startup, users should strongly prefer using [`Time::set_relative_speed`].
+    /// Changing the step size itself will likely result in unstable numerical behavior.
     ///
     /// # Panics
     ///
-    /// Panics if `delta` is a zero-length duration.
-    pub fn set_delta(&mut self, delta: Duration) {
-        assert!(!delta.is_zero(), "division by zero");
-        self.delta = delta;
+    /// Panics if `step_size` is a zero-length duration.
+    pub fn set_delta(&mut self, step_size: Duration) {
+        assert!(!step_size.is_zero(), "division by zero");
+        self.delta = step_size;
         self.delta_seconds = self.delta.as_secs_f32();
         self.delta_seconds_f64 = self.delta.as_secs_f64();
     }
 
-    /// Sets the timestep to `delta` seconds, given as [`f32`].
+    /// Sets [`delta`](Self::delta) to the given step size ([`f32`] seconds).
     ///
-    /// Note: Outside of startup, users should prefer using [`Time::set_relative_speed`]
-    /// as changing the timestep itself will likely change system behavior.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `delta` is less than or equal to zero, not finite, or overflows a `Duration`.
-    pub fn set_delta_seconds(&mut self, delta: f32) {
-        self.set_delta(Duration::from_secs_f32(delta));
-    }
-
-    /// Sets the timestep to `delta` seconds, given as [`f64`].
-    ///
-    /// Note: Outside of startup, users should prefer using [`Time::set_relative_speed`]
-    /// as changing the timestep itself will likely change system behavior.
+    /// **Note:** This should only be set *once* (i.e. at startup).
+    /// Afterwards, only [`Time::set_relative_speed`] should be used to adjust simulation speed.
+    /// Changing [`delta`](Self::delta) directly will likely result in unstable numerical behavior.
     ///
     /// # Panics
     ///
-    /// Panics if `delta` is less than or equal to zero, not finite, or overflows a `Duration`.
-    pub fn set_delta_seconds_f64(&mut self, delta: f64) {
-        self.set_delta(Duration::from_secs_f64(delta));
+    /// Panics if `step_size` is less than or equal to zero, not finite, or overflows a `Duration`.
+    pub fn set_delta_seconds(&mut self, step_size: f32) {
+        self.set_delta(Duration::from_secs_f32(step_size));
     }
 
-    /// Returns the nominal update rate (reciprocal of [`FixedTime::delta`]) as [`f32`].
+    /// Sets [`delta`](Self::delta) to the given step size ([`f64`] seconds).
+    ///
+    /// **Note:** This should only be set *once* (i.e. at startup).
+    /// Afterwards, only [`Time::set_relative_speed`] should be used to adjust simulation speed.
+    /// Changing [`delta`](Self::delta) directly will likely result in unstable numerical behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `step_size` is less than or equal to zero, not finite, or overflows a `Duration`.
+    pub fn set_delta_seconds_f64(&mut self, step_size: f64) {
+        self.set_delta(Duration::from_secs_f64(step_size));
+    }
+
+    /// Returns the nominal update rate (reciprocal of [`delta`](Self::delta)) as [`f32`].
     #[inline]
     pub fn steps_per_second(&self) -> f32 {
         1.0 / self.delta_seconds
     }
 
-    /// Returns the nominal update rate (reciprocal of [`FixedTime::delta`]) as [`f64`].
+    /// Returns the nominal update rate (reciprocal of [`delta`](Self::delta)) as [`f64`].
     #[inline]
     pub fn steps_per_second_f64(&self) -> f64 {
         1.0 / self.delta_seconds_f64
     }
 
-    /// Sets the timestep to the reciprocal of `rate`, given as [`f32`].
+    /// Sets [`delta`](Self::delta) to the reciprocal of `rate`, given as [`f32`].
     ///
-    /// Note: Outside of startup, users should prefer using [`Time::set_relative_speed`]
-    /// as changing the timestep itself will likely change system behavior.
+    /// **Note:** This should only be set *once* (i.e. at startup).
+    /// Afterwards, only [`Time::set_relative_speed`] should be used to adjust simulation speed.
+    /// Changing [`delta`](Self::delta) directly will likely result in unstable numerical behavior.
     ///
     /// # Panics
     ///
@@ -181,10 +183,11 @@ impl FixedTime {
         self.set_delta(Duration::from_secs_f32(1.0 / rate));
     }
 
-    /// Sets the timestep to the reciprocal of `rate`, given as [`f64`].
+    /// Sets [`delta`](Self::delta) to the reciprocal of `rate`, given as [`f64`].
     ///
-    /// Note: Outside of startup, users should prefer using [`Time::set_relative_speed`]
-    /// as changing the timestep itself will likely change system behavior.
+    /// **Note:** This should only be set *once* (i.e. at startup).
+    /// Afterwards, only [`Time::set_relative_speed`] should be used to adjust simulation speed.
+    /// Changing [`delta`](Self::delta) directly will likely result in unstable numerical behavior.
     ///
     /// # Panics
     ///
@@ -195,30 +198,33 @@ impl FixedTime {
         self.set_delta(Duration::from_secs_f64(1.0 / rate));
     }
 
-    /// Returns how much time has advanced since [`startup`](FixedTime::startup), as [`Duration`].
+    /// Returns how much time has advanced since [`startup`](Self::startup), as [`Duration`].
     #[inline]
     pub fn elapsed_since_startup(&self) -> Duration {
         self.elapsed_since_startup
     }
 
-    /// Returns how much time has advanced since [`startup`](FixedTime::startup), as [`f32`] seconds.
+    /// Returns how much time has advanced since [`startup`](Self::startup), as [`f32`] seconds.
     #[inline]
     pub fn seconds_since_startup(&self) -> f32 {
         self.seconds_since_startup
     }
 
-    /// Returns how much time has advanced since [`startup`](FixedTime::startup), as [`f64`] seconds.
+    /// Returns how much time has advanced since [`startup`](Self::startup), as [`f64`] seconds.
     #[inline]
     pub fn seconds_since_startup_f64(&self) -> f64 {
         self.seconds_since_startup_f64
     }
 }
 
-/// Accumulates time and converts it into steps: one step per [`FixedTime::delta`] accumulated. Used to drive [`FixedTime`] and [`FixedTimestep`].
+/// Accumulates time and converts it into steps: one step per `timestep`.
+///
+/// Used to advance [`FixedTime`] and drive the [`FixedUpdate`](crate::CoreSet::FixedUpdate) system set.
 #[derive(Debug, Clone)]
 pub struct FixedTimestepState {
     steps: u32,
     overstep: Duration,
+    max_steps_per_update: Option<u32>,
 }
 
 impl Default for FixedTimestepState {
@@ -226,6 +232,7 @@ impl Default for FixedTimestepState {
         Self {
             steps: 0,
             overstep: Duration::ZERO,
+            max_steps_per_update: None,
         }
     }
 }
@@ -233,7 +240,11 @@ impl Default for FixedTimestepState {
 impl FixedTimestepState {
     /// Constructs a new `FixedTimestepState`.
     pub fn new(steps: u32, overstep: Duration) -> Self {
-        Self { steps, overstep }
+        Self {
+            steps,
+            overstep,
+            ..Default::default()
+        }
     }
 
     /// Returns the number of steps accumulated.
@@ -250,7 +261,8 @@ impl FixedTimestepState {
 
     /// Returns the amount of time accumulated toward new steps, as an [`f32`] fraction of `timestep`.
     ///
-    /// Use this function when interpolating data between consecutive [`FixedTimestep`] iterations.
+    /// Useful for interpolating data between consecutive iterations of the
+    /// [`FixedUpdate`](crate::CoreSet::FixedUpdate) system set.
     ///
     /// # Panics
     ///
@@ -262,7 +274,8 @@ impl FixedTimestepState {
 
     /// Returns the amount of time accumulated toward new steps, as an [`f64`] fraction of `timestep`.
     ///
-    /// Use this function when interpolating data between consecutive [`FixedTimestep`] iterations.
+    /// Useful for interpolating data between consecutive iterations of the
+    /// [`FixedUpdate`](crate::CoreSet::FixedUpdate) system set.
     ///
     /// # Panics
     ///
@@ -300,40 +313,36 @@ impl FixedTimestepState {
         self.steps = 0;
         self.overstep = Duration::ZERO;
     }
+
+    /// Returns the maximum number of times the [`FixedUpdate`](crate::CoreSet::FixedUpdate)
+    /// system set can run in one frame.
+    ///
+    /// `None` means "no limit."
+    #[inline]
+    pub fn max_steps_per_update(&self) -> Option<u32> {
+        self.max_steps_per_update
+    }
+
+    /// Sets the maximum number of times the [`FixedUpdate`](crate::CoreSet::FixedUpdate)
+    /// system set can run in one frame.
+    ///
+    /// `None` means "no limit."
+    pub fn set_max_steps_per_update(&mut self, steps: Option<u32>) {
+        self.max_steps_per_update = steps;
+    }
 }
 
-/// A run criteria that queues a [`System`](bevy_ecs::system::System) or [`Stage`](bevy_ecs::schedule::Stage)
-/// to run once for every [`FixedTime::delta`] seconds advanced.
-///
-/// That is **not** the same as "once every `FixedTime::delta` seconds."
-/// The exact CPU time between steps depends on the frame rate and [`Time::relative_speed`].
-///
-/// For example, a `Stage` set to run 100 steps per second will run whenever [`Time`] advances by 10ms,
-/// but unless the [`Time::delta`] is always exactly 10ms, the actual measured time between steps will vary.
-/// Thus, for consistent behavior, users should avoid `Time` in systems using this run criteria
-/// and use `FixedTime` instead.
-pub struct FixedTimestep;
-
-impl FixedTimestep {
-    /// Returns `ShouldRun::YesAndCheckAgain` while there are accumulated steps remaining, `ShouldRun::No` otherwise.
-    ///
-    /// Also returns `ShouldRun::No` if either [`FixedTime`] or [`FixedTimestepState`] does not exist.
-    pub fn step(
-        fixed_time: Option<ResMut<FixedTime>>,
-        accumulator: Option<ResMut<FixedTimestepState>>,
-    ) -> ShouldRun {
-        match (fixed_time, accumulator) {
-            (Some(mut fixed_time), Some(mut accumulator)) => {
-                if accumulator.sub_step().is_some() {
-                    fixed_time.update();
-                    ShouldRun::YesAndCheckAgain
-                } else {
-                    ShouldRun::No
-                }
-            }
-            _ => ShouldRun::No,
+/// Advances [`FixedTime`] and runs the systems under [`FixedUpdate`](crate::CoreSet::FixedUpdate),
+/// if enough time has accumulated.
+pub(crate) fn fixed_update(world: &mut World) {
+    world.resource_scope(|world, mut accumulator: Mut<FixedTimestepState>| {
+        let mut budget = accumulator.max_steps_per_update().unwrap_or(u32::MAX);
+        while budget.checked_sub(1).is_some() && accumulator.sub_step().is_some() {
+            world.resource_mut::<FixedTime>().update();
+            run_scheduled(CoreInternalSet::FixedUpdate, world);
+            budget -= 1;
         }
-    }
+    });
 }
 
 #[cfg(test)]

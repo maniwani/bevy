@@ -1,20 +1,21 @@
 use crate::App;
 use std::any::Any;
 
-/// A collection of Bevy App logic and configuration
+/// Portable [`App`] configuration.
 ///
-/// Plugins configure an [`App`](crate::App). When an [`App`](crate::App) registers
-/// a plugin, the plugin's [`Plugin::build`] function is run.
+/// Plugins make it easy to export (and re-import) systems, systems sets, and resources.
+///
+/// After you import a plugin to an [`App`](crate::App) using [`add_plugin`](App::add_plugin), the app will run its [`build`](Plugin::build) function.
 pub trait Plugin: Any + Send + Sync {
-    /// Configures the [`App`] to which this plugin is added.
+    /// Applies the stored configuration to the given [`App`].
     fn build(&self, app: &mut App);
-    /// Configures a name for the [`Plugin`]. Primarily for debugging.
+    /// Returns the name of this plugin.
     fn name(&self) -> &str {
         std::any::type_name::<Self>()
     }
 }
 
-/// Type representing an unsafe function that returns a mutable pointer to a [`Plugin`].
-/// Used for dynamically loading plugins. See
-/// `bevy_dynamic_plugin/src/loader.rs#dynamically_load_plugin`
+/// An alias for an unsafe function that returns a pointer to a [`Plugin`].
+/// Used for dynamically loading plugins,
+/// as shown in [this example][`bevy_dynamic_plugin/src/loader.rs#dynamically_load_plugin`].
 pub type CreatePlugin = unsafe fn() -> *mut dyn Plugin;

@@ -1,12 +1,5 @@
 #![allow(warnings)]
 //! Tools for controlling system execution.
-//!
-//! When using Bevy ECS, systems are usually run from a [`SystemRegistry`], not directly.
-//!
-//! # Running systems in order
-//!
-//! - Systems can be arranged through a combination of `.label()`, `.before()`, and `.after()` methods.
-//! - When systems have an undefined order, their command queues may be applied in a different order each app run.
 
 mod condition;
 mod descriptor;
@@ -82,17 +75,17 @@ enum Cycle {
 /// A schematic for running a `System` collection on a `World`.
 pub(crate) struct SetMetadata {
     /// A graph containing all systems and sets directly under this set.
-    graph: DiGraphMap<RegistryId, ()>,
+    graph: DiGraphMap<RegId, ()>,
     /// A graph containing all systems under this set.
-    flat: DiGraphMap<RegistryId, ()>,
+    flat: DiGraphMap<RegId, ()>,
     /// The sub-hierarchy under this set.
-    hier: DiGraphMap<RegistryId, ()>,
+    hier: DiGraphMap<RegId, ()>,
     /// A cached topological order for `graph`.
-    topsort: Vec<RegistryId>,
+    topsort: Vec<RegId>,
     /// A cached topological order for `flat`.
-    flat_topsort: Vec<RegistryId>,
+    flat_topsort: Vec<RegId>,
     /// A cached topological order for `hier`.
-    hier_topsort: Vec<RegistryId>,
+    hier_topsort: Vec<RegId>,
     /// The combined component access of all systems under this set.
     component_access: Access<ComponentId>,
     /// Does this metadata needs to be rebuilt before set can run again?
@@ -121,15 +114,15 @@ pub struct Builder<'a> {
 }
 
 impl Builder<'_> {
-    pub fn add_system<P>(&mut self, system: impl IntoSystemDescriptor<P>) {
+    pub fn add_system<P>(&mut self, system: impl IntoScheduledSystem<P>) {
         self.registry.add_system(system);
     }
 
-    pub fn add_set(&mut self, set: impl IntoSetDescriptor) {
+    pub fn add_set(&mut self, set: impl IntoScheduledSet) {
         self.registry.add_set(set);
     }
 
-    pub fn add_many(&mut self, nodes: impl IntoIterator<Item = Descriptor>) {
+    pub fn add_many(&mut self, nodes: impl IntoIterator<Item = Scheduled>) {
         self.registry.add_many(nodes);
     }
 
@@ -146,15 +139,15 @@ impl Builder<'_> {
 pub struct SystemRegistry {
     world_id: Option<WorldId>,
     next_id: u64,
-    ids: HashMap<BoxedSystemLabel, RegistryId>,
-    // names: HashMap<RegistryId, BoxedSystemLabel>,
-    hier: DiGraphMap<RegistryId, ()>,
-    pub(crate) systems: HashMap<RegistryId, Option<BoxedSystem>>,
-    pub(crate) system_conditions: HashMap<RegistryId, Option<Vec<BoxedRunCondition>>>,
-    pub(crate) runners: HashMap<RegistryId, Option<Runner>>,
-    pub(crate) set_conditions: HashMap<RegistryId, Option<Vec<BoxedRunCondition>>>,
-    pub(crate) set_metadata: HashMap<RegistryId, SetMetadata>,
-    uninit_nodes: Vec<GraphConfig>,
+    ids: HashMap<BoxedSystemLabel, RegId>,
+    // names: HashMap<RegId, BoxedSystemLabel>,
+    hier: DiGraphMap<RegId, ()>,
+    pub(crate) systems: HashMap<RegId, Option<BoxedSystem>>,
+    pub(crate) system_conditions: HashMap<RegId, Option<Vec<BoxedRunCondition>>>,
+    pub(crate) runners: HashMap<RegId, Option<Runner>>,
+    pub(crate) set_conditions: HashMap<RegId, Option<Vec<BoxedRunCondition>>>,
+    pub(crate) set_metadata: HashMap<RegId, SetMetadata>,
+    uninit_nodes: Vec<Scheduling>,
 }
 
 impl Default for SystemRegistry {
@@ -181,60 +174,60 @@ impl SystemRegistry {
     }
 
     /// Registers a [`System`](crate::system::System) and returns its ID.
-    pub fn add_system<P>(&mut self, system: impl IntoSystemDescriptor<P>) -> RegistryId {
-        let SystemDescriptor {
+    pub fn add_system<P>(&mut self, system: impl IntoScheduledSystem<P>) -> RegId {
+        let ScheduledSystem {
             system,
-            mut config,
-            run_criteria,
-        } = system.into_descriptor();
+            mut scheduling,
+            conditions,
+        } = system.schedule();
 
-        if config.name().is_none() {
-            config.name = Some(system.name().dyn_clone());
+        if scheduling.name().is_none() {
+            scheduling.name = Some(system.name().dyn_clone());
         }
 
-        let name = config.name().unwrap();
+        let name = scheduling.name().unwrap();
         assert!(!self.ids.contains_key(name), "name already used");
 
-        let id = RegistryId::System(self.next_id);
+        let id = RegId::System(self.next_id);
         self.next_id += 1;
         self.ids.insert(name.dyn_clone(), id);
 
         self.systems.insert(id, Some(system));
-        self.system_conditions.insert(id, Some(run_criteria));
-        self.uninit_nodes.push(config);
+        self.system_conditions.insert(id, Some(conditions));
+        self.uninit_nodes.push(scheduling);
 
         id
     }
 
     /// Registers a [`System`](crate::system::System) set and returns its ID.
-    pub fn add_set(&mut self, set: impl IntoSetDescriptor) -> RegistryId {
-        let SetDescriptor {
-            config,
-            run_criteria,
-        } = set.into_descriptor();
+    pub fn add_set(&mut self, set: impl IntoScheduledSet) -> RegId {
+        let ScheduledSet {
+            scheduling,
+            conditions,
+        } = set.schedule();
 
-        let name = config.name().unwrap();
+        let name = scheduling.name().unwrap();
         assert!(!self.ids.contains_key(name), "name already used");
 
-        let id = RegistryId::Set(self.next_id);
+        let id = RegId::Set(self.next_id);
         self.next_id += 1;
         self.ids.insert(name.dyn_clone(), id);
 
         self.set_metadata.insert(id, SetMetadata::default());
-        self.set_conditions.insert(id, Some(run_criteria));
+        self.set_conditions.insert(id, Some(conditions));
         self.runners.insert(id, None);
-        self.uninit_nodes.push(config);
+        self.uninit_nodes.push(scheduling);
 
         id
     }
 
-    /// Registers multiple systems and system sets at once and returns their IDs.
-    pub fn add_many(&mut self, nodes: impl IntoIterator<Item = Descriptor>) -> Vec<RegistryId> {
+    /// Registers multiple systems and system sets at the same time and returns their IDs.
+    pub fn add_many(&mut self, nodes: impl IntoIterator<Item = Scheduled>) -> Vec<RegId> {
         let ids = nodes
             .into_iter()
-            .map(|desc| match desc {
-                Descriptor::System(system) => self.add_system(system),
-                Descriptor::Set(set) => self.add_set(set),
+            .map(|node| match node {
+                Scheduled::System(system) => self.add_system(system),
+                Scheduled::Set(set) => self.add_set(set),
             })
             .collect();
 
@@ -288,9 +281,9 @@ impl SystemRegistry {
 
     fn initialize(&mut self, world: &mut World) -> Result<()> {
         // check for obvious errors
-        for config in self.uninit_nodes.iter() {
-            for label in config.sets().iter() {
-                if config.name() == Some(label) {
+        for scheduling in self.uninit_nodes.iter() {
+            for label in scheduling.sets().iter() {
+                if scheduling.name() == Some(label) {
                     return Err(ScheduleBuildError::HierarchyLoop);
                 }
                 if self.ids.get(label).is_none() {
@@ -300,8 +293,8 @@ impl SystemRegistry {
                     return Err(ScheduleBuildError::InvalidSetLabel);
                 }
             }
-            for (_order, label) in config.edges().iter() {
-                if config.name() == Some(label) {
+            for (_order, label) in scheduling.edges().iter() {
+                if scheduling.name() == Some(label) {
                     return Err(ScheduleBuildError::DependencyLoop);
                 }
                 if self.ids.get(label).is_none() {
@@ -311,32 +304,32 @@ impl SystemRegistry {
         }
 
         // convert labels to ids
-        let configs_indexed = self
+        let indexed = self
             .uninit_nodes
             .drain(..)
-            .map(|config| {
-                let name = config.name().unwrap();
+            .map(|sched| {
+                let name = sched.name().unwrap();
                 let id = *self.ids.get(name).unwrap();
 
-                let sets = config
+                let sets = sched
                     .sets()
                     .iter()
                     .map(|label| *self.ids.get(label).unwrap())
                     .collect::<HashSet<_>>();
-                let edges = config
+                let edges = sched
                     .edges()
                     .iter()
                     .map(|(order, label)| (*order, *self.ids.get(label).unwrap()))
                     .collect::<Vec<_>>();
 
-                (id, IndexedGraphConfig { sets, edges })
+                (id, IndexedScheduling { sets, edges })
             })
             .collect::<HashMap<_, _>>();
 
         // init the systems
-        for (id, config) in configs_indexed.iter() {
+        for (id, _scheduling) in indexed.iter() {
             match id {
-                RegistryId::System(_) => {
+                RegId::System(_) => {
                     let system = self.systems.get_mut(&id).unwrap();
                     system.as_mut().unwrap().initialize(world);
                     let conditions = self.system_conditions.get_mut(&id).unwrap();
@@ -345,7 +338,7 @@ impl SystemRegistry {
                         .flatten()
                         .for_each(|system| system.initialize(world));
                 }
-                RegistryId::Set(_) => {
+                RegId::Set(_) => {
                     let conditions = self.set_conditions.get_mut(&id).unwrap();
                     conditions
                         .iter_mut()
@@ -356,32 +349,32 @@ impl SystemRegistry {
         }
 
         // add nodes to hierarchy
-        for (&id, config) in configs_indexed.iter() {
+        for (&id, scheduling) in indexed.iter() {
             self.hier.add_node(id);
-            for &set_id in config.sets().iter() {
+            for &set_id in scheduling.sets().iter() {
                 self.hier.add_edge(set_id, id, ());
             }
 
             // mark all sets above as modified
             self.walk_up(id)?;
 
-            for &set_id in config.sets().iter() {
+            for &set_id in scheduling.sets().iter() {
                 let set = self.set_metadata.get_mut(&set_id).unwrap();
                 set.graph.add_node(id);
             }
 
-            for &(order, other_id) in config.edges().iter() {
+            for &(order, other_id) in scheduling.edges().iter() {
                 let (before, after) = match order {
                     Order::Before => (id, other_id),
                     Order::After => (other_id, id),
                 };
 
-                let other_sets = configs_indexed.get(&other_id).unwrap().sets();
-                if config.sets().is_disjoint(other_sets) {
+                let other_sets = indexed.get(&other_id).unwrap().sets();
+                if scheduling.sets().is_disjoint(other_sets) {
                     // TODO: consider allowing when satisfiable
                     return Err(ScheduleBuildError::CrossDependency);
                 } else {
-                    for set_id in config.sets().intersection(other_sets) {
+                    for set_id in scheduling.sets().intersection(other_sets) {
                         let set = self.set_metadata.get_mut(&set_id).unwrap();
                         set.graph.add_edge(before, after, ());
                     }
@@ -392,7 +385,7 @@ impl SystemRegistry {
         Ok(())
     }
 
-    fn walk_up(&mut self, id: RegistryId) -> Result<()> {
+    fn walk_up(&mut self, id: RegId) -> Result<()> {
         #[cfg(feature = "trace")]
         let _guard = bevy_utils::tracing::info_span!("propagate change").entered();
 
@@ -425,12 +418,12 @@ impl SystemRegistry {
         Ok(())
     }
 
-    fn walk_down(&mut self, id: RegistryId) -> Result<()> {
+    fn walk_down(&mut self, id: RegId) -> Result<()> {
         assert!(id.is_set(), "only sets can have nodes below them");
         #[cfg(feature = "trace")]
         let _guard = bevy_utils::tracing::info_span!("rebuild set graph").entered();
 
-        let mut sub_hier = DiGraphMap::<RegistryId, ()>::new();
+        let mut sub_hier = DiGraphMap::<RegId, ()>::new();
 
         // BFS
         let mut queue = VecDeque::new();
@@ -491,13 +484,13 @@ impl SystemRegistry {
             let children = set.graph.nodes().collect::<Vec<_>>();
             for child in children.iter() {
                 match child {
-                    RegistryId::System(_) => {
+                    RegId::System(_) => {
                         let set = self.set_metadata.get_mut(&set_id).unwrap();
                         let system = self.systems.get(&child).unwrap();
                         let access = system.as_ref().unwrap().component_access();
                         set.component_access.extend(&access);
                     }
-                    RegistryId::Set(_) => {
+                    RegId::Set(_) => {
                         let [set, subset] =
                             self.set_metadata.get_many_mut([&set_id, &child]).unwrap();
                         set.component_access.extend(&subset.component_access);
@@ -508,14 +501,14 @@ impl SystemRegistry {
 
         // flatten (to system nodes and system-system edges only)
         for &set_id in sets_topsort.iter().rev() {
-            let mut flat = DiGraphMap::<RegistryId, ()>::new();
+            let mut flat = DiGraphMap::<RegId, ()>::new();
             let set = self.set_metadata.get(&set_id).unwrap();
             for child in set.graph.nodes() {
                 match child {
-                    RegistryId::System(_) => {
+                    RegId::System(_) => {
                         flat.add_node(child);
                     }
-                    RegistryId::Set(_) => {
+                    RegId::Set(_) => {
                         let subset = self.set_metadata.get(&child).unwrap();
                         flat.extend(subset.flat.all_edges());
                     }
@@ -524,20 +517,20 @@ impl SystemRegistry {
 
             for (before, after, _) in set.graph.all_edges() {
                 match (before, after) {
-                    (RegistryId::System(_), RegistryId::System(_)) => {
+                    (RegId::System(_), RegId::System(_)) => {
                         flat.add_edge(before, after, ());
                     }
-                    (RegistryId::Set(_), RegistryId::System(_)) => {
+                    (RegId::Set(_), RegId::System(_)) => {
                         for u in self.set_metadata.get(&before).unwrap().flat.nodes() {
                             flat.add_edge(u, after, ());
                         }
                     }
-                    (RegistryId::System(_), RegistryId::Set(_)) => {
+                    (RegId::System(_), RegId::Set(_)) => {
                         for v in self.set_metadata.get(&after).unwrap().flat.nodes() {
                             flat.add_edge(before, v, ());
                         }
                     }
-                    (RegistryId::Set(_), RegistryId::Set(_)) => {
+                    (RegId::Set(_), RegId::Set(_)) => {
                         for u in self.set_metadata.get(&before).unwrap().flat.nodes() {
                             for v in self.set_metadata.get(&after).unwrap().flat.nodes() {
                                 flat.add_edge(u, v, ());
@@ -575,7 +568,7 @@ impl SystemRegistry {
 }
 
 impl SystemRegistry {
-    pub(crate) fn rebuild_set_executor(&mut self, set_id: RegistryId) {
+    pub(crate) fn rebuild_set_executor(&mut self, set_id: RegId) {
         assert!(set_id.is_set());
         let set = self.set_metadata.get(&set_id).unwrap();
         let sys_count = set.flat.node_count();
@@ -686,14 +679,14 @@ impl SystemRegistry {
 
 // helper methods
 impl SystemRegistry {
-    fn get_node_name(&self, id: RegistryId) -> Cow<'static, str> {
+    fn get_node_name(&self, id: RegId) -> Cow<'static, str> {
         match id {
-            RegistryId::System(_) => "mysterious system".into(),
-            RegistryId::Set(_) => "mysterious set".into(),
+            RegId::System(_) => "mysterious system".into(),
+            RegId::Set(_) => "mysterious set".into(),
         }
     }
 
-    fn check_hierarchy(&self, transitive_edges: &Vec<(RegistryId, RegistryId)>) -> Result<()> {
+    fn check_hierarchy(&self, transitive_edges: &Vec<(RegId, RegId)>) -> Result<()> {
         if transitive_edges.is_empty() {
             return Ok(());
         }
@@ -717,9 +710,9 @@ impl SystemRegistry {
 
     fn check_ambiguous(
         &self,
-        graph: &DiGraphMap<RegistryId, ()>,
-        intersecting_sets: &HashMap<(RegistryId, RegistryId), HashSet<RegistryId>>,
-        ambiguities: &HashSet<(RegistryId, RegistryId)>,
+        graph: &DiGraphMap<RegId, ()>,
+        intersecting_sets: &HashMap<(RegId, RegId), HashSet<RegId>>,
+        ambiguities: &HashSet<(RegId, RegId)>,
     ) -> Result<()> {
         let required_ambiguous = intersecting_sets.keys().cloned().collect();
         let actual_ambiguous = ambiguities
@@ -755,22 +748,22 @@ impl SystemRegistry {
 
     fn check_conflicts(
         &self,
-        intersecting_sets: &HashMap<(RegistryId, RegistryId), HashSet<RegistryId>>,
-        ambiguities: &HashSet<(RegistryId, RegistryId)>,
-        set_id: RegistryId,
+        intersecting_sets: &HashMap<(RegId, RegId), HashSet<RegId>>,
+        ambiguities: &HashSet<(RegId, RegId)>,
+        set_id: RegId,
         world: &World,
     ) -> Result<()> {
         let get_combined_access = |id| {
             let mut access = Access::default();
             match id {
-                RegistryId::System(_) => {
+                RegId::System(_) => {
                     let system = self.systems.get(&id).unwrap();
                     access.extend(system.as_ref().unwrap().component_access());
                     for system in self.system_conditions.get(&id).unwrap().iter().flatten() {
                         access.extend(system.component_access());
                     }
                 }
-                RegistryId::Set(_) => {
+                RegId::Set(_) => {
                     access.extend(&self.set_metadata.get(&id).unwrap().component_access);
                     for system in self.set_conditions.get(&id).unwrap().iter().flatten() {
                         access.extend(system.component_access());
@@ -837,9 +830,9 @@ impl SystemRegistry {
 
     fn check_graph_cycles(
         &self,
-        set_id: RegistryId,
-        set_graph: &DiGraphMap<RegistryId, ()>,
-        strongly_connected_components: &Vec<Vec<RegistryId>>,
+        set_id: RegId,
+        set_graph: &DiGraphMap<RegId, ()>,
+        strongly_connected_components: &Vec<Vec<RegId>>,
         cycle: Cycle,
     ) -> Result<()> {
         if strongly_connected_components.len() == set_graph.node_count() {
@@ -965,7 +958,6 @@ mod tests {
         schedule::*,
         system::{Local, Query, ResMut},
         world::World,
-        {chain, group},
     };
 
     struct Order(pub Vec<usize>);
