@@ -62,19 +62,19 @@ pub enum CoreSet {
 pub enum CoreSystem {
     /// Advances [`Time`]. First thing that runs in a frame.
     Time,
-    /// Advances [`FixedTime`] and runs the systems under [`FixedUpdate`](CoreSet::FixedUpdate).
+    /// Advances [`FixedTime`] and runs the systems in [`FixedUpdate`](CoreSet::FixedUpdate).
     FixedUpdate,
-    /// Calls [`apply_buffers`] after the systems under [`First`](CoreSet::First).
+    /// Calls [`apply_buffers`] after the systems in [`First`](CoreSet::First).
     ApplyFirst,
-    /// Calls [`apply_buffers`] after the systems under [`FixedUpdate`](CoreSet::FixedUpdate).
+    /// Calls [`apply_buffers`] after the systems in [`FixedUpdate`](CoreSet::FixedUpdate).
     ApplyFixedUpdate,
-    /// Calls [`apply_buffers`] after the systems under [`PreUpdate`](CoreSet::PreUpdate).
+    /// Calls [`apply_buffers`] after the systems in [`PreUpdate`](CoreSet::PreUpdate).
     ApplyPreUpdate,
-    /// Calls [`apply_buffers`] after the systems under [`Update`](CoreSet::Update).
+    /// Calls [`apply_buffers`] after the systems in [`Update`](CoreSet::Update).
     ApplyUpdate,
-    /// Calls [`apply_buffers`] after the systems under [`PostUpdate`](CoreSet::PostUpdate).
+    /// Calls [`apply_buffers`] after the systems in [`PostUpdate`](CoreSet::PostUpdate).
     ApplyPostUpdate,
-    /// Calls [`apply_buffers`] after the systems under [`Last`](CoreSet::Last).
+    /// Calls [`apply_buffers`] after the systems in [`Last`](CoreSet::Last).
     ApplyLast,
 }
 
@@ -82,7 +82,8 @@ pub enum CoreSystem {
 #[doc(hidden)]
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
 pub(crate) enum CoreInternalSet {
-    /// Encompasses [`CoreSet::FixedUpdate`] and [`CoreSystem::ApplyFixedUpdate`].
+    /// Encompasses the [`FixedUpdate`](CoreSet::FixedUpdate) system set and
+    /// [`ApplyFixedUpdate`](CoreSystem::ApplyFixedUpdate).
     FixedUpdate,
 }
 

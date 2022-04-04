@@ -8,7 +8,7 @@ use bevy_utils::{Duration, Instant};
 use crate::{CoreInternalSet, Time};
 
 /// A [`Time`]-substitute that only advances in increments of a constant [`delta`](FixedTime::delta).
-/// Intended for systems running under the [`FixedUpdate`](crate::CoreSet::FixedUpdate) system set.
+/// Intended for systems running in the [`FixedUpdate`](crate::CoreSet::FixedUpdate) system set.
 ///
 /// [`FixedTime`] is synchronized to [`Time`].
 #[derive(Debug, Clone)]
@@ -332,7 +332,7 @@ impl FixedTimestepState {
     }
 }
 
-/// Advances [`FixedTime`] and runs the systems under [`FixedUpdate`](crate::CoreSet::FixedUpdate),
+/// Advances [`FixedTime`] and runs the systems in [`FixedUpdate`](crate::CoreSet::FixedUpdate),
 /// if enough time has accumulated.
 pub(crate) fn fixed_update(world: &mut World) {
     world.resource_scope(|world, mut accumulator: Mut<FixedTimestepState>| {

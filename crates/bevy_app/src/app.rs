@@ -61,11 +61,11 @@ struct SubApp {
 /// System sets providing basic app functionality.
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
 pub enum AppSet {
-    /// Systems that run only once when the app starts, before the [`Startup`](AppSet::Startup) set.
+    /// Systems that run only once when the app starts, before the systems in [`Startup`](AppSet::Startup).
     PreStartup,
     /// Systems that run only once when the app starts.
     Startup,
-    /// Systems that run only once when the app starts, after the [`Startup`](AppSet::Startup) set.
+    /// Systems that run only once when the app starts, after the systems in [`Startup`](AppSet::Startup).
     PostStartup,
     /// Systems that run each time the app updates.
     Update,
@@ -77,13 +77,13 @@ pub enum AppSet {
 #[doc(hidden)]
 #[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
 pub enum AppSystem {
-    /// Runs the systems under the [`Startup`](`AppSet::Startup`) set.
+    /// Runs the systems in the [`Startup`](`AppSet::Startup`) system set.
     Startup,
-    /// Calls [`apply_buffers`] after the systems under [`PreStartup`](AppSet::PreStartup) run.
+    /// Calls [`apply_buffers`] after the systems in [`PreStartup`](AppSet::PreStartup) run.
     ApplyPreStartup,
-    /// Calls [`apply_buffers`] after the systems under [`Startup`](AppSet::Startup) run.
+    /// Calls [`apply_buffers`] after the systems in [`Startup`](AppSet::Startup) run.
     ApplyStartup,
-    /// Calls [`apply_buffers`] after the systems under [`PostStartup`](AppSet::PostStartup) run.
+    /// Calls [`apply_buffers`] after the systems in [`PostStartup`](AppSet::PostStartup) run.
     ApplyPostStartup,
     /// Clears the world's lists of entities with removed components.
     ClearTrackers,
@@ -211,7 +211,7 @@ impl App {
     }
 
     /// Adds [`Events::<T>`](bevy_ecs::event::Events) as a resource in the world and schedules its
-    /// [`update_system`](bevy_ecs::event::Events::update_system) to run under the
+    /// [`update_system`](bevy_ecs::event::Events::update_system) to run in the
     /// [`UpdateEvents`](AppSet::UpdateEvents) system set.
     ///
     /// # Example
@@ -369,7 +369,7 @@ impl App {
     /// ```
     /// # use bevy_app::{prelude::*, PluginGroupBuilder};
     /// #
-    /// # // Dummy created to avoid using bevy_internal, which pulls in to many dependencies.
+    /// # // This is a dummy. The real plugin group would pull in too many dependencies.
     /// # struct MinimalPlugins;
     /// # impl PluginGroup for MinimalPlugins {
     /// #     fn build(&mut self, group: &mut PluginGroupBuilder){;}

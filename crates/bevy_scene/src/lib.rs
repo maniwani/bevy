@@ -20,7 +20,7 @@ pub mod prelude {
 
 use bevy_app::prelude::*;
 use bevy_asset::AddAsset;
-use bevy_ecs::schedule::IntoSystemDescriptor;
+use bevy_ecs::schedule::IntoScheduledSystem;
 
 #[derive(Default)]
 pub struct ScenePlugin;

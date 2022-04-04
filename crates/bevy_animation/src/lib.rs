@@ -12,7 +12,7 @@ use bevy_ecs::{
     entity::Entity,
     prelude::Component,
     reflect::ReflectComponent,
-    schedule::ParallelSystemDescriptorCoercion,
+    schedule::IntoScheduledSystem,
     system::{Query, Res},
 };
 use bevy_hierarchy::{Children, HierarchySystem};
