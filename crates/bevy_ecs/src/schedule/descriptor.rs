@@ -109,17 +109,23 @@ fn new_set(label: BoxedSystemLabel) -> ScheduledSet {
     }
 }
 
+// TODO: fn prepend_to(self, set: impl SystemLabel), fn append_to(self, set: impl SystemLabel)
+// TODO: Adds something to a set before / after everything in the set (when added)
+
 /// Types that can be converted into a [`ScheduledSet`].
 ///
 /// Implemented for types the implement [`SystemLabel`] and boxed trait objects.
 pub trait IntoScheduledSet: sealed::IntoScheduledSet {
+    /// Convert into a `ScheduledSet`.
     fn schedule(self) -> ScheduledSet;
-    /// Configures the system set to run under the set given by `label`.
-    fn to(self, label: impl SystemLabel) -> ScheduledSet;
-    /// Configures the system set to run before `label`.
+    /// Configures the system set to run under `set`.
+    fn to(self, set: impl SystemLabel) -> ScheduledSet;
+    /// Configures the system set to run before the system or set given by `label`.
     fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet;
-    /// Configures the system set to run after `label`.
+    /// Configures the system set to run after the system or set given by `label`.
     fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet;
+    /// Configures the system set to run between the systems or sets given by `a` and `b`.
+    fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> ScheduledSet;
     /// Configures the system set to run only if `condition` returns `true`.
     fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSet;
 }
@@ -132,8 +138,8 @@ where
         new_set(Box::new(self))
     }
 
-    fn to(self, label: impl SystemLabel) -> ScheduledSet {
-        new_set(Box::new(self)).to(label)
+    fn to(self, set: impl SystemLabel) -> ScheduledSet {
+        new_set(Box::new(self)).to(set)
     }
 
     fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet {
@@ -142,6 +148,10 @@ where
 
     fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet {
         new_set(Box::new(self)).after(label)
+    }
+
+    fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> ScheduledSet {
+        new_set(Box::new(self)).after(a).before(b)
     }
 
     fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSet {
@@ -154,8 +164,8 @@ impl IntoScheduledSet for BoxedSystemLabel {
         new_set(self)
     }
 
-    fn to(self, label: impl SystemLabel) -> ScheduledSet {
-        new_set(self).to(label)
+    fn to(self, set: impl SystemLabel) -> ScheduledSet {
+        new_set(self).to(set)
     }
 
     fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet {
@@ -164,6 +174,10 @@ impl IntoScheduledSet for BoxedSystemLabel {
 
     fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSet {
         new_set(self).after(label)
+    }
+
+    fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> ScheduledSet {
+        new_set(self).after(a).before(b)
     }
 
     fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSet {
@@ -176,8 +190,8 @@ impl IntoScheduledSet for ScheduledSet {
         self
     }
 
-    fn to(mut self, label: impl SystemLabel) -> ScheduledSet {
-        self.scheduling.sets.insert(label.dyn_clone());
+    fn to(mut self, set: impl SystemLabel) -> ScheduledSet {
+        self.scheduling.sets.insert(set.dyn_clone());
         self
     }
 
@@ -193,6 +207,10 @@ impl IntoScheduledSet for ScheduledSet {
             .edges
             .push((Order::After, label.as_system_label().dyn_clone()));
         self
+    }
+
+    fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> ScheduledSet {
+        self.after(a).before(b)
     }
 
     fn iff<P>(mut self, condition: impl IntoRunCondition<P>) -> ScheduledSet {
@@ -226,15 +244,18 @@ fn new_system(system: BoxedSystem) -> ScheduledSystem {
 /// Implemented for types that implement [`System<In=(), Out=()>`](crate::system::System)
 /// and boxed trait objects.
 pub trait IntoScheduledSystem<Params>: sealed::IntoScheduledSystem<Params> {
+    /// Convert into a `ScheduledSystem`.
     fn schedule(self) -> ScheduledSystem;
     /// Sets `name` as the unique label for this instance of the system.
     fn named(self, name: impl SystemLabel) -> ScheduledSystem;
     /// Configures the system to run under the set given by `label`.
-    fn to(self, label: impl SystemLabel) -> ScheduledSystem;
-    /// Configures the system to run before `label`.
+    fn to(self, set: impl SystemLabel) -> ScheduledSystem;
+    /// Configures the system to run before the system or set given by `label`.
     fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem;
-    /// Configures the system to run after `label`.
+    /// Configures the system to run after the system or set given by `label`.
     fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem;
+    /// Configures the system to run between the systems or sets given by `a` and `b`.
+    fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> ScheduledSystem;
     /// Configures the system to run only if `condition` returns `true`.
     fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSystem;
 }
@@ -251,8 +272,8 @@ where
         new_system(Box::new(IntoSystem::into_system(self))).named(name)
     }
 
-    fn to(self, label: impl SystemLabel) -> ScheduledSystem {
-        new_system(Box::new(IntoSystem::into_system(self))).to(label)
+    fn to(self, set: impl SystemLabel) -> ScheduledSystem {
+        new_system(Box::new(IntoSystem::into_system(self))).to(set)
     }
 
     fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
@@ -261,6 +282,12 @@ where
 
     fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
         new_system(Box::new(IntoSystem::into_system(self))).after(label)
+    }
+
+    fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> ScheduledSystem {
+        new_system(Box::new(IntoSystem::into_system(self)))
+            .after(a)
+            .before(b)
     }
 
     fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSystem {
@@ -277,8 +304,8 @@ impl IntoScheduledSystem<()> for BoxedSystem<(), ()> {
         new_system(self).named(name)
     }
 
-    fn to(self, label: impl SystemLabel) -> ScheduledSystem {
-        new_system(self).to(label)
+    fn to(self, set: impl SystemLabel) -> ScheduledSystem {
+        new_system(self).to(set)
     }
 
     fn before<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
@@ -287,6 +314,10 @@ impl IntoScheduledSystem<()> for BoxedSystem<(), ()> {
 
     fn after<M>(self, label: impl AsSystemLabel<M>) -> ScheduledSystem {
         new_system(self).after(label)
+    }
+
+    fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> ScheduledSystem {
+        new_system(self).after(a).before(b)
     }
 
     fn iff<P>(self, condition: impl IntoRunCondition<P>) -> ScheduledSystem {
@@ -304,8 +335,8 @@ impl IntoScheduledSystem<()> for ScheduledSystem {
         self
     }
 
-    fn to(mut self, label: impl SystemLabel) -> ScheduledSystem {
-        self.scheduling.sets.insert(label.dyn_clone());
+    fn to(mut self, set: impl SystemLabel) -> ScheduledSystem {
+        self.scheduling.sets.insert(set.dyn_clone());
         self
     }
 
@@ -321,6 +352,10 @@ impl IntoScheduledSystem<()> for ScheduledSystem {
             .edges
             .push((Order::After, label.as_system_label().dyn_clone()));
         self
+    }
+
+    fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> ScheduledSystem {
+        self.after(a).before(b)
     }
 
     fn iff<P>(mut self, condition: impl IntoRunCondition<P>) -> ScheduledSystem {
@@ -386,7 +421,7 @@ impl ScheduledSystem {
 }
 
 #[doc(hidden)]
-/// Describes multiple systems and system sets.
+/// Describes multiple systems and system sets, in no particular order.
 pub struct Group(Vec<Scheduled>);
 
 impl Group {
@@ -410,20 +445,20 @@ impl Group {
         self
     }
 
-    /// Configures the nodes to run before `label`.
-    pub fn before(mut self, label: impl SystemLabel) -> Self {
+    /// Configures the nodes to run before the system or set given by `label`.
+    pub fn before<M>(mut self, label: impl AsSystemLabel<M>) -> Self {
         for node in self.0.iter_mut() {
             match node {
                 Scheduled::System(system) => {
                     system
                         .scheduling
                         .edges
-                        .push((Order::Before, label.dyn_clone()));
+                        .push((Order::Before, label.as_system_label().dyn_clone()));
                 }
                 Scheduled::Set(set) => {
                     set.scheduling
                         .edges
-                        .push((Order::Before, label.dyn_clone()));
+                        .push((Order::Before, label.as_system_label().dyn_clone()));
                 }
             }
         }
@@ -431,23 +466,30 @@ impl Group {
         self
     }
 
-    /// Configures the nodes to run after `label`.
-    pub fn after(mut self, label: impl SystemLabel) -> Self {
+    /// Configures the nodes to run after the system or set given by `label`.
+    pub fn after<M>(mut self, label: impl AsSystemLabel<M>) -> Self {
         for node in self.0.iter_mut() {
             match node {
                 Scheduled::System(system) => {
                     system
                         .scheduling
                         .edges
-                        .push((Order::After, label.dyn_clone()));
+                        .push((Order::After, label.as_system_label().dyn_clone()));
                 }
                 Scheduled::Set(set) => {
-                    set.scheduling.edges.push((Order::After, label.dyn_clone()));
+                    set.scheduling
+                        .edges
+                        .push((Order::After, label.as_system_label().dyn_clone()));
                 }
             }
         }
 
         self
+    }
+
+    /// Configures the system to run between the systems or sets given by `a` and `b`.
+    pub fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> Self {
+        self.after(a).before(b)
     }
 }
 
@@ -498,20 +540,20 @@ impl Chain {
         self
     }
 
-    /// Configures the nodes to run before `label`.
-    pub fn before(mut self, label: impl SystemLabel) -> Self {
+    /// Configures the nodes to run before the system or set given by `label`.
+    pub fn before<M>(mut self, label: impl AsSystemLabel<M>) -> Self {
         if let Some(last) = self.0.last_mut() {
             match last {
                 Scheduled::System(system) => {
                     system
                         .scheduling
                         .edges
-                        .push((Order::Before, label.dyn_clone()));
+                        .push((Order::Before, label.as_system_label().dyn_clone()));
                 }
                 Scheduled::Set(set) => {
                     set.scheduling
                         .edges
-                        .push((Order::Before, label.dyn_clone()));
+                        .push((Order::Before, label.as_system_label().dyn_clone()));
                 }
             }
         }
@@ -519,23 +561,30 @@ impl Chain {
         self
     }
 
-    /// Configures the nodes to run after `label`.
-    pub fn after(mut self, label: impl SystemLabel) -> Self {
+    /// Configures the nodes to run after the system or set given by `label`.
+    pub fn after<M>(mut self, label: impl AsSystemLabel<M>) -> Self {
         if let Some(first) = self.0.first_mut() {
             match first {
                 Scheduled::System(system) => {
                     system
                         .scheduling
                         .edges
-                        .push((Order::After, label.dyn_clone()));
+                        .push((Order::After, label.as_system_label().dyn_clone()));
                 }
                 Scheduled::Set(set) => {
-                    set.scheduling.edges.push((Order::After, label.dyn_clone()));
+                    set.scheduling
+                        .edges
+                        .push((Order::After, label.as_system_label().dyn_clone()));
                 }
             }
         }
 
         self
+    }
+
+    /// Configures the nodes to run between the systems or sets given by `a` and `b`.
+    pub fn between<M>(self, a: impl AsSystemLabel<M>, b: impl AsSystemLabel<M>) -> Self {
+        self.after(a).before(b)
     }
 }
 
@@ -548,22 +597,22 @@ impl IntoIterator for Chain {
     }
 }
 
-/// A mixed group of systems and system sets.
+/// A mixed group of systems and system sets with no particular order.
 #[macro_export]
-macro_rules! group {
+macro_rules! par {
     ($($x:expr),+ $(,)?) => {
         bevy_ecs::schedule::Group::new(vec![$(($x).schedule().into_enum()),+])
     };
 }
 
-pub use group;
+pub use par;
 
-/// A mixed group of systems and system sets, ordered in a sequence.
+/// A mixed group of systems and system sets with sequential order.
 #[macro_export]
-macro_rules! chain {
+macro_rules! seq {
     ($($x:expr),+ $(,)?) => {
         bevy_ecs::schedule::Chain::new(vec![$(($x).schedule().into_enum()),+])
     };
 }
 
-pub use chain;
+pub use seq;

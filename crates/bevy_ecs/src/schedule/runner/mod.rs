@@ -39,11 +39,14 @@ impl Default for RunnerApplyBuffers {
 /// Signals the runner to call [`apply_buffers`](crate::System::apply_buffers) for all
 /// completed but "unflushed" systems on the [`World`].
 ///
-/// **Note** that it is only systems under the schedule being run and their buffers
+/// **Note** that it is only systems under the set being run and their buffers
 /// are applied in topological order.
 pub fn apply_buffers(world: &mut World) {
     let mut should_apply_buffers = world.resource_mut::<RunnerApplyBuffers>();
-    assert!(!should_apply_buffers.0, "pending commands not applied");
+    assert!(
+        !should_apply_buffers.0,
+        "some buffers did not get applied when expected"
+    );
     should_apply_buffers.0 = true;
     world.check_change_ticks();
 }

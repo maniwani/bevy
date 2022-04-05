@@ -18,7 +18,7 @@ pub struct Access<T: SparseSetIndex> {
     reads_all: bool,
     /// Does this have exclusive access to all elements in the collection?
     /// This field exists as a performance optimization for `&mut World`.
-    writes_all: bool,
+    pub(crate) writes_all: bool,
     marker: PhantomData<T>,
 }
 

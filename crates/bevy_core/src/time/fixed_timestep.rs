@@ -315,7 +315,7 @@ impl FixedTimestepState {
     }
 
     /// Returns the maximum number of times the [`FixedUpdate`](crate::CoreSet::FixedUpdate)
-    /// system set can run in one frame.
+    /// system set can run in one [`App`](bevy_app::app::App) update.
     ///
     /// `None` means "no limit."
     #[inline]
@@ -324,7 +324,7 @@ impl FixedTimestepState {
     }
 
     /// Sets the maximum number of times the [`FixedUpdate`](crate::CoreSet::FixedUpdate)
-    /// system set can run in one frame.
+    /// system set can run in one [`App`](bevy_app::app::App) update.
     ///
     /// `None` means "no limit."
     pub fn set_max_steps_per_update(&mut self, steps: Option<u32>) {

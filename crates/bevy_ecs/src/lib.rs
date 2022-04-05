@@ -29,7 +29,7 @@ pub mod prelude {
         event::{EventReader, EventWriter},
         query::{Added, AnyOf, ChangeTrackers, Changed, Or, QueryState, With, Without},
         schedule::{
-            apply_buffers, apply_state_transition, chain, group, Fsm, IntoScheduledSet,
+            apply_buffers, apply_state_transition, par, seq, Fsm, IntoScheduledSet,
             IntoScheduledSystem, State, SystemLabel,
         },
         system::{

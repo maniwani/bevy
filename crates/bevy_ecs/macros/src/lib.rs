@@ -419,6 +419,7 @@ pub fn derive_world_query(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_derive(SystemLabel)]
+/// Derive macro generating an impl of the trait `SystemLabel`.
 pub fn derive_system_label(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let mut trait_path = bevy_ecs_path();

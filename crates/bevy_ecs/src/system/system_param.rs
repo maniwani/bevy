@@ -294,6 +294,7 @@ pub struct ParamSet<'w, 's, T: SystemParam> {
 }
 
 /// The [`SystemParamState`] of [`ParamSet<(...)>`](ParamSet).
+#[doc(hidden)]
 pub struct ParamSetState<T: for<'w, 's> SystemParamFetch<'w, 's>>(T);
 
 impl_param_set!();
@@ -801,9 +802,9 @@ impl<'w, 's, T: Resource + FromWorld> SystemParamFetch<'w, 's> for LocalState<T>
 /// may return entities that have already been despawned.
 ///
 /// - If you are using `bevy_ecs` as a standalone crate, `RemovedComponents` will need to be
-/// manually cleared using [`World::clear_trackers`].
-/// - If you are using `bevy`, both the `MinimalPlugins` and `DefaultPlugins` add [`World::clear_trackers`]
-/// as a system to [`CoreSet::Last`](bevy_core::CoreSet::Last).
+/// manually cleared using [`clear_trackers`](World::clear_trackers).
+/// - If you are using `bevy`, [`App`](bevy_app::app::App) schedules [`clear_trackers`]
+/// to run at the end of each update.
 ///
 /// # Examples
 ///

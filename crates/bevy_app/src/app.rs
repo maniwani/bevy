@@ -4,7 +4,7 @@ use bevy_ecs::{
     event::Events,
     prelude::FromWorld,
     schedule::{
-        apply_buffers, chain, run_scheduled, IntoScheduledSet, IntoScheduledSystem, Scheduled,
+        apply_buffers, run_scheduled, seq, IntoScheduledSet, IntoScheduledSystem, Scheduled,
         SystemLabel, SystemRegistry,
     },
     system::Resource,
@@ -59,7 +59,7 @@ struct SubApp {
 }
 
 /// System sets providing basic app functionality.
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 pub enum AppSet {
     /// Systems that run only once when the app starts, before the systems in [`Startup`](AppSet::Startup).
     PreStartup,
@@ -75,7 +75,7 @@ pub enum AppSet {
 
 /// Systems providing basic app functionality.
 #[doc(hidden)]
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 pub enum AppSystem {
     /// Runs the systems in the [`Startup`](`AppSet::Startup`) system set.
     Startup,
@@ -91,9 +91,9 @@ pub enum AppSystem {
 
 /// Internal system sets needed to bypass limitations with [`apply_buffers`].
 #[doc(hidden)]
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 pub(crate) enum AppInternalSet {
-    /// Encompasses all startup sets and command application.
+    /// Encompasses all startup sets.
     Startup,
 }
 
@@ -108,20 +108,16 @@ pub struct AppExit;
 impl Default for App {
     fn default() -> Self {
         let mut app = App::empty();
-
-        #[cfg(feature = "bevy_reflect")]
-        app.init_resource::<bevy_reflect::TypeRegistryArc>();
         app.add_event::<AppExit>();
-
         app.add_system(
             (|world: &mut World| {
                 run_scheduled(AppInternalSet::Startup, world);
             })
             .named(AppSystem::Startup),
-        );
-        app.add_set(AppInternalSet::Startup);
-        app.add_many(
-            chain![
+        )
+        .add_set(AppInternalSet::Startup)
+        .add_many(
+            seq![
                 AppSet::PreStartup,
                 apply_buffers.named(AppSystem::ApplyPreStartup),
                 AppSet::Startup,
@@ -130,15 +126,18 @@ impl Default for App {
                 apply_buffers.named(AppSystem::ApplyPostStartup),
             ]
             .to(AppInternalSet::Startup),
-        );
-        app.add_set(AppSet::Update);
-        app.add_set(AppSet::UpdateEvents.to(AppSet::Update));
-        app.add_system(
+        )
+        .add_set(AppSet::Update)
+        .add_set(AppSet::UpdateEvents.to(AppSet::Update))
+        .add_system(
             World::clear_trackers
                 .named(AppSystem::ClearTrackers)
                 .to(AppSet::Update)
                 .after(AppSet::UpdateEvents),
         );
+
+        #[cfg(feature = "bevy_reflect")]
+        app.init_resource::<bevy_reflect::TypeRegistryArc>();
 
         #[cfg(feature = "bevy_ci_testing")]
         {

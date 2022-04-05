@@ -34,7 +34,7 @@ use std::ops::Range;
 pub struct CorePlugin;
 
 /// Systems sets comprising the standard execution sequence.
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 pub enum CoreSet {
     /// Systems that run before the systems in the other core sets (but after [`Time`] is updated).
     First,
@@ -58,7 +58,7 @@ pub enum CoreSet {
 
 /// Systems comprising the standard execution sequence.
 #[doc(hidden)]
-#[derive(Debug, PartialEq, Eq, Clone, Hash, SystemLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 pub enum CoreSystem {
     /// Advances [`Time`]. First thing that runs in a frame.
     Time,
@@ -80,7 +80,7 @@ pub enum CoreSystem {
 
 /// Internal system sets needed to bypass limitations with [`apply_buffers`].
 #[doc(hidden)]
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 pub(crate) enum CoreInternalSet {
     /// Encompasses the [`FixedUpdate`](CoreSet::FixedUpdate) system set and
     /// [`ApplyFixedUpdate`](CoreSystem::ApplyFixedUpdate).
