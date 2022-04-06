@@ -4,9 +4,9 @@
 
 use std::ops::Deref;
 
-use bevy_app::{App, CoreStage, Plugin};
+use bevy_app::{App, Plugin};
 use bevy_asset::{AddAsset, Assets, Handle};
-use bevy_core::{Name, Time};
+use bevy_core::{CoreSet, Name, Time};
 use bevy_ecs::{
     change_detection::DetectChanges,
     entity::Entity,
@@ -266,7 +266,7 @@ pub fn animation_player(
     }
 }
 
-/// Adds animation support to an app
+/// Adds animation support.
 #[derive(Default)]
 pub struct AnimationPlugin {}
 
@@ -274,9 +274,9 @@ impl Plugin for AnimationPlugin {
     fn build(&self, app: &mut App) {
         app.add_asset::<AnimationClip>()
             .register_type::<AnimationPlayer>()
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
+            .add_system(
                 animation_player
+                    .to(CoreSet::PostUpdate)
                     .before(TransformSystem::TransformPropagate)
                     .after(HierarchySystem::ParentUpdate),
             );

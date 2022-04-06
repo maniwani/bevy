@@ -12,7 +12,7 @@ use bevy_reflect::TypeUuid;
 use bevy_render::mesh::Mesh;
 use bevy_scene::Scene;
 
-/// Adds support for glTF file loading to the app.
+/// Adds support for loading glTF files.
 #[derive(Default)]
 pub struct GltfPlugin;
 

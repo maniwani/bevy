@@ -11,7 +11,7 @@ use bevy::{
     scene::InstanceId,
 };
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 struct CameraControllerCheckSystem;
 
 fn main() {

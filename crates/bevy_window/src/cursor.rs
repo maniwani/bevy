@@ -1,5 +1,5 @@
 /// The icon to display for a window's cursor
-#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Copy)]
 pub enum CursorIcon {
     Default,
     Crosshair,

@@ -1,30 +1,17 @@
-use bevy::{
-    core::{FixedTimestep, FixedTimestepState},
-    prelude::*,
-};
-
-#[derive(Debug, Hash, PartialEq, Eq, Clone, StageLabel)]
-struct FixedUpdateStage;
+use bevy::prelude::*;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_startup_system(set_fixed_timestep)
-        // This system will run once every update.
-        .add_system(frame_update)
-        // This stage will run ten times a second.
-        .add_stage_after(
-            CoreStage::Update,
-            FixedUpdateStage,
-            SystemStage::parallel()
-                .with_run_criteria(FixedTimestep::step)
-                .with_system(fixed_update),
+        .add_system(
+            (|mut time: ResMut<FixedTime>| {
+                time.set_steps_per_second(10.0);
+            })
+            .to(AppSet::Startup),
         )
+        .add_system(fixed_update.to(CoreSet::FixedUpdate))
+        .add_system(frame_update.to(CoreSet::Update))
         .run();
-}
-
-fn set_fixed_timestep(mut time: ResMut<FixedTime>) {
-    time.set_steps_per_second(10.0);
 }
 
 fn frame_update(mut last_time: Local<f32>, time: Res<Time>) {

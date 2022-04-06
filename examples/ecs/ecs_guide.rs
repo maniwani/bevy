@@ -249,7 +249,7 @@ fn local_state_system(mut state: Local<State>, query: Query<(&Player, &Score)>) 
     state.counter += 1;
 }
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, StageLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, StageLabel)]
 enum MyStage {
     BeforeRound,
     AfterRound,

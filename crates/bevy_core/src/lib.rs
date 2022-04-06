@@ -23,15 +23,11 @@ pub mod prelude {
 use bevy_app::{prelude::*, AppSystem};
 use bevy_ecs::{
     entity::Entity,
-    schedule::{apply_buffers, chain, IntoScheduledSet, IntoScheduledSystem, SystemLabel},
+    schedule::{apply_buffers, seq, IntoScheduledSet, IntoScheduledSystem, SystemLabel},
 };
 use bevy_utils::HashSet;
 
 use std::ops::Range;
-
-/// [`Plugin`] that adds a standard system execution sequence.
-#[derive(Default)]
-pub struct CorePlugin;
 
 /// Systems sets comprising the standard execution sequence.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
@@ -87,6 +83,10 @@ pub(crate) enum CoreInternalSet {
     FixedUpdate,
 }
 
+/// Adds a standard system execution sequence and time-related resources.
+#[derive(Default)]
+pub struct CorePlugin;
+
 impl Plugin for CorePlugin {
     fn build(&self, app: &mut App) {
         app.world
@@ -105,7 +105,7 @@ impl Plugin for CorePlugin {
             .register_type::<Range<f32>>()
             .register_type::<Timer>()
             .add_many(
-                chain![
+                seq![
                     update_time.named(CoreSystem::Time),
                     CoreSet::First,
                     apply_buffers.named(CoreSystem::ApplyFirst),
@@ -124,7 +124,7 @@ impl Plugin for CorePlugin {
                 .before(AppSystem::ClearTrackers),
             )
             .add_many(
-                chain![
+                seq![
                     CoreSet::FixedUpdate,
                     apply_buffers.named(CoreSystem::ApplyFixedUpdate),
                 ]

@@ -105,7 +105,7 @@ pub mod clear_graph {
 #[derive(Default)]
 pub struct CorePipelinePlugin;
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 pub enum CorePipelineRenderSystems {
     SortTransparent2d,
 }

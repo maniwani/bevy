@@ -77,14 +77,14 @@ impl From<Transform> for TransformBundle {
         Self::from_transform(transform)
     }
 }
-/// Label enum for the systems relating to transform propagation
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+/// Labels for the systems involved in transform propagation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 pub enum TransformSystem {
-    /// Propagates changes in transform to childrens' [`GlobalTransform`](crate::components::GlobalTransform)
+    /// Propagates [`Transform`] changes to [`GlobalTransform`](crate::components::GlobalTransform).
     TransformPropagate,
 }
 
-/// The base plugin for handling [`Transform`] components
+/// Adds [`Transform`] components and systems for managing the transform hierarchy.
 #[derive(Default)]
 pub struct TransformPlugin;
 
@@ -93,16 +93,16 @@ impl Plugin for TransformPlugin {
         app.register_type::<Transform>()
             .register_type::<GlobalTransform>()
             // Adding these to startup ensures the first update is "correct"
-            .add_startup_system_to_stage(
-                StartupStage::PostStartup,
+            .add_system(
                 systems::transform_propagate_system
-                    .label(TransformSystem::TransformPropagate)
+                    .named(TransformSystem::TransformPropagate)
+                    .to(AppSet::PostStartup)
                     .after(HierarchySystem::ParentUpdate),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
+            .add_system(
                 systems::transform_propagate_system
-                    .label(TransformSystem::TransformPropagate)
+                    .named(TransformSystem::TransformPropagate)
+                    .to(CoreSet::PostUpdate)
                     .after(HierarchySystem::ParentUpdate),
             );
     }

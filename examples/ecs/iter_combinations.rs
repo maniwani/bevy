@@ -1,7 +1,7 @@
 use bevy::{core::FixedTimestep, pbr::AmbientLight, prelude::*, render::camera::Camera};
 use rand::{thread_rng, Rng};
 
-#[derive(Debug, Hash, PartialEq, Eq, Clone, StageLabel)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, StageLabel)]
 struct FixedUpdateStage;
 
 const TIME_STEP: f32 = 0.01;

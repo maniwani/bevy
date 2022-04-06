@@ -25,14 +25,16 @@ pub mod prelude {
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
-/// The base plugin for handling [`Parent`] and [`Children`] components
+/// Adds [`Parent`] and [`Children`] components and systems for handling them.
 #[derive(Default)]
 pub struct HierarchyPlugin;
 
-/// Label enum for the systems relating to hierarchy upkeep
-#[derive(Debug, Hash, PartialEq, Eq, Clone, SystemLabel)]
+/// Systems related to hierarchy upkeep.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
 pub enum HierarchySystem {
-    /// Updates [`Parent`] when changes in the hierarchy occur
+    /// Initializes [`Parent`] components at startup.
+    ParentInit,
+    /// Updates [`Parent`] components when the hierarchy changes.
     ParentUpdate,
 }
 
@@ -41,13 +43,15 @@ impl Plugin for HierarchyPlugin {
         app.register_type::<Children>()
             .register_type::<Parent>()
             .register_type::<PreviousParent>()
-            .add_startup_system_to_stage(
-                StartupStage::PostStartup,
-                parent_update_system.label(HierarchySystem::ParentUpdate),
+            .add_system(
+                parent_update_system
+                    .named(HierarchySystem::ParentInit)
+                    .to(AppSet::PostStartup),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
-                parent_update_system.label(HierarchySystem::ParentUpdate),
+            .add_system(
+                parent_update_system
+                    .named(HierarchySystem::ParentUpdate)
+                    .to(bevy_core::CoreSet::PostUpdate),
             );
     }
 }

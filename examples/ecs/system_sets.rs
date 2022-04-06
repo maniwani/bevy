@@ -1,145 +1,100 @@
-use bevy::{app::AppExit, ecs::schedule::ShouldRun, prelude::*};
+use bevy::prelude::*;
 
-/// A [`SystemLabel`] can be applied as a label to systems and system sets,
-/// which can then be referred to from other systems.
-/// This is useful in case a user wants to e.g. run _before_ or _after_
-/// some label.
-/// `Clone`, `Hash`, `Debug`, `PartialEq`, `Eq`, are all required to derive
-/// [`SystemLabel`].
-#[derive(Clone, Hash, Debug, PartialEq, Eq, SystemLabel)]
+/// A label can be "instantiated" as a system set or used to give a system a unique name.
+///
+/// Deriving [`SystemLabel`] requires [`Debug`], [`Clone`], [`PartialEq`], [`Eq`], and [`Hash`].
+#[derive(Debug Clone, PartialEq, Eq, Hash, SystemLabel)]
 struct Physics;
 
-#[derive(Clone, Hash, Debug, PartialEq, Eq, SystemLabel)]
+#[derive(Debug Clone, PartialEq, Eq, Hash, SystemLabel)]
 struct PostPhysics;
 
-/// Resource used to stop our example.
+/// Resource used to stop the example.
 #[derive(Default)]
 struct Done(bool);
 
 /// This example realizes the following scheme:
 ///
 /// ```none
-/// Physics                     (Criteria: App has run < 1.0 seconds)
-///     \--> update_velocity        (via label PhysicsSystem::UpdateVelocity)
-///     \--> movement               (via label PhysicsSystem::Movement)
-/// PostPhysics                 (Criteria: Resource `done` is false)
+/// Physics                     (condition: app has been running for less than 1 second)
+///     \--> update_velocity
+///     \--> movement
+/// PostPhysics                 (condition: done == false)
 ///     \--> collision || sfx
-/// Exit                        (Criteria: Resource `done` is true)
+/// Exit                        (condition: done == true)
 ///     \--> exit
 /// ```
 ///
-/// The `Physics` label represents a [`SystemSet`] containing two systems.
-/// This set's criteria is to stop after a second has elapsed.
-/// The two systems (`update_velocity`, `movement`) run in a specified order.
+/// The `Physics` label represents a system set with two systems.
+/// Its two systems (`update_velocity` and `movement`) run in a specific order.
+/// It will stop running after a second.
 ///
-/// Another label `PostPhysics` uses run criteria to only run after `Physics` has finished.
-/// This set's criteria is to run only when _not done_, as specified via a resource.
-/// The two systems here (collision, sfx) are not specified to run in any order, and the actual
-/// ordering can then change between invocations.
-///
-/// Lastly a system with run criterion _done_ is used to exit the app.
+/// The `PostPhysics` label is conditioned to only run once `Physics` has finished.
+/// Its two systems (`collision` and `sfx`) have no specified order.
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        // Add our plugins.
+        .add_plugins(MinimalPlugins)
+        // Initialize the resource.
         .init_resource::<Done>()
-        // Note that the system sets added in this example set their run criteria explicitly.
-        // See the `ecs/state.rs` example for a pattern where run criteria are set implicitly for common
-        // use cases- typically state transitions.
-        // Also note that a system set has a single run criterion at most, which means using `.with_run_criteria(...)`
-        // after `SystemSet::on_update(...)` would override the state transition criterion.
-        .add_system_set(
-            SystemSet::new()
-                // This label is added to all systems in this set.
-                // The label can then be referred to elsewhere (other sets).
-                .label(Physics)
-                // This criteria ensures this whole system set only runs when this system's
-                // output says so (ShouldRun::Yes)
-                .with_run_criteria(run_for_a_second)
-                .with_system(update_velocity)
-                // Make movement run after update_velocity
-                .with_system(movement.after(update_velocity)),
+
+        .add_set(Physics.iff(run_for_a_second))
+        .add_set(PostPhysics
+            .to("")
+            .after(Physics)
+            .iff()
         )
-        .add_system_set(
-            SystemSet::new()
-                .label(PostPhysics)
-                // This whole set runs after `Physics` (which in this case is a label for
-                // another set).
-                // There is also `.before(..)`.
-                .after(Physics)
-                // This shows that we can modify existing run criteria results.
-                // Here we create a _not done_ criteria by piping the output of
-                // the `is_done` system and inverting the output.
-                // Notice a string literal also works as a label.
-                .with_run_criteria(RunCriteria::pipe(
-                    "is_done_label",
-                    IntoSystem::into_system(inverse),
-                ))
-                // `collision` and `sfx` are not ordered with respect to
-                // each other, and may run in any order
-                .with_system(collision)
-                .with_system(sfx),
-        )
+        // Add systems to `Physics`.
+        .add_many(seq![update_velocity, movement].to(Physics))
+        // Add systems to `PostPhysics`.
+        // `collision` and `sfx` can run in any order
+        .add_many(par![collision, sfx].to(PostPhysics))
         .add_system(
-            exit.after(PostPhysics)
-                // Label the run criteria such that the `PostPhysics` set can reference it
-                .with_run_criteria(is_done.label("is_done_label")),
+            exit
+                .to("")
+                .after(PostPhysics)
+                .iff(|| { true })
         )
         .run();
 }
 
-/// Example of a run criteria.
-/// Here we only want to run for a second, then stop.
-fn run_for_a_second(time: Res<Time>, mut done: ResMut<Done>) -> ShouldRun {
-    let elapsed = time.seconds_since_startup();
+fn less_than_one_second(time: Res<Time>, mut done: ResMut<Done>) -> bool {
+    let elapsed = time.raw_seconds_since_startup();
     if elapsed < 1.0 {
         info!(
             "We should run again. Elapsed/remaining: {:.2}s/{:.2}s",
             elapsed,
             1.0 - elapsed
         );
-        ShouldRun::Yes
+        true
     } else {
         done.0 = true;
-        ShouldRun::No
+        false
     }
 }
 
 /// Another run criteria, simply using a resource.
-fn is_done(done: Res<Done>) -> ShouldRun {
-    if done.0 {
-        ShouldRun::Yes
-    } else {
-        ShouldRun::No
-    }
-}
-
-/// Used with [`RunCritera::pipe`], inverts the result of the
-/// passed system.
-fn inverse(input: In<ShouldRun>) -> ShouldRun {
-    match input.0 {
-        ShouldRun::No => ShouldRun::Yes,
-        ShouldRun::Yes => ShouldRun::No,
-        _ => unreachable!(),
-    }
+fn is_done(done: Res<Done>) -> bool {
+    done.0
 }
 
 fn update_velocity() {
-    info!("Updating velocity");
+    info!("updating velocity");
 }
 
 fn movement() {
-    info!("Updating movement");
+    info!("updating movement");
 }
 
 fn collision() {
-    info!("Physics done- checking collisions");
+    info!("checking collisions");
 }
 
 fn sfx() {
-    info!("Physics done- playing some sfx");
+    info!("playing sfx");
 }
 
 fn exit(mut app_exit_events: EventWriter<AppExit>) {
-    info!("Exiting...");
+    info!("exiting...");
     app_exit_events.send(AppExit);
 }

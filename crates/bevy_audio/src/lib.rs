@@ -45,9 +45,7 @@ pub use audio_source::*;
 use bevy_app::prelude::*;
 use bevy_asset::AddAsset;
 
-/// Adds support for audio playback to a Bevy Application
-///
-/// Use the [`Audio`] resource to play audio.
+/// Adds support for audio playback through an [`Audio`] resource.
 #[derive(Default)]
 pub struct AudioPlugin;
 
@@ -57,10 +55,7 @@ impl Plugin for AudioPlugin {
             .add_asset::<AudioSource>()
             .add_asset::<AudioSink>()
             .init_resource::<Audio<AudioSource>>()
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
-                play_queued_audio_system::<AudioSource>,
-            );
+            .add_system(play_queued_audio_system::<AudioSource>.to(bevy_core::CoreSet::PostUpdate));
 
         #[cfg(any(feature = "mp3", feature = "flac", feature = "wav", feature = "vorbis"))]
         app.init_asset_loader::<AudioLoader>();
