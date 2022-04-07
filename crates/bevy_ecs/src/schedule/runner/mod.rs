@@ -3,7 +3,7 @@ mod single_threaded;
 
 use crate::{
     schedule::{BoxedRunCondition, RegId, SystemLabel, SystemRegistry},
-    system::BoxedSystem,
+    system::{AsSystemLabel, BoxedSystem},
     world::World,
 };
 
@@ -13,20 +13,20 @@ use self::single_threaded::{SimpleRunner, SingleThreadedRunner};
 use bevy_utils::tracing::Instrument;
 use bevy_utils::HashMap;
 
-use downcast_rs::{impl_downcast, Downcast};
 use fixedbitset::FixedBitSet;
 
+use std::cell::RefCell;
+
 /// Types that can run [`System`] instances on the data stored in a [`World`].
-pub trait SystemRunner: Downcast + Send + Sync {
-    fn run(&mut self, world: &mut World);
+pub(super) trait Runner: Send + Sync {
+    fn init(&mut self, schedule: &mut Schedule);
+    fn run(&mut self, schedule: &mut Schedule, world: &mut World);
 }
 
-impl_downcast!(SystemRunner);
-
 /// Internal resource used by [`apply_buffers`] to signal the runner to apply the buffers
-/// of all completed but "unflushed" systems to the [`World`].
+/// of all completed but unapplied systems to the [`World`].
 ///
-/// **Note** that it is only systems under the schedule being run and their buffers
+/// **Note** this only applies systems within the set being run and their buffers
 /// are applied in topological order.
 pub(super) struct RunnerApplyBuffers(pub bool);
 
@@ -37,9 +37,9 @@ impl Default for RunnerApplyBuffers {
 }
 
 /// Signals the runner to call [`apply_buffers`](crate::System::apply_buffers) for all
-/// completed but "unflushed" systems on the [`World`].
+/// completed but unapplied systems on the [`World`].
 ///
-/// **Note** that it is only systems under the set being run and their buffers
+/// **Note** this only applies systems within the set being run and their buffers
 /// are applied in topological order.
 pub fn apply_buffers(world: &mut World) {
     let mut should_apply_buffers = world.resource_mut::<RunnerApplyBuffers>();
@@ -51,30 +51,32 @@ pub fn apply_buffers(world: &mut World) {
     world.check_change_ticks();
 }
 
-/// Temporarily takes ownership of systems and the schematic for running them in order
-/// and testing their conditions.
-pub(crate) struct Runner {
-    /// A list of systems, topsorted according to system dependency graph.
-    pub(crate) systems: Vec<BoxedSystem>,
-    /// A list of system run criteria, topsorted according to system dependency graph.
-    pub(crate) system_conditions: Vec<Vec<BoxedRunCondition>>,
-    /// A list of set run criteria, topsorted according to set hierarchy graph.
-    pub(crate) set_conditions: Vec<Vec<BoxedRunCondition>>,
-    /// A map relating each system index to its number of dependencies and list of dependents.
-    pub(crate) system_deps: HashMap<usize, (usize, Vec<usize>)>,
-    /// A map relating each system index to a bitset of its ancestor sets.
-    pub(crate) system_sets: HashMap<usize, FixedBitSet>,
-    /// A map relating each set index to a bitset of its descendant systems.
-    pub(crate) set_systems: HashMap<usize, FixedBitSet>,
-    /// A list of systems (their ids), topsorted according to dependency graph.
+/// Temporary container and schematic for running a collection of systems.
+pub(super) struct Schedule {
+    /// List of systems, topsorted according to system dependency graph.
+    pub(super) systems: Vec<RefCell<BoxedSystem>>,
+    /// List of systems' conditions, topsorted according to system dependency graph.
+    pub(super) system_conditions: Vec<RefCell<Vec<BoxedRunCondition>>>,
+    /// List of sets' conditions, topsorted according to set hierarchy graph.
+    pub(super) set_conditions: Vec<RefCell<Vec<BoxedRunCondition>>>,
+    /// Map relating each system index to its number of dependencies and list of dependents.
+    pub(super) system_deps: HashMap<usize, (usize, Vec<usize>)>,
+    /// Map relating each system index to a bitset of its ancestor sets.
+    pub(super) system_sets: HashMap<usize, FixedBitSet>,
+    /// Map relating each set index to a bitset of its descendant systems.
+    pub(super) set_systems: HashMap<usize, FixedBitSet>,
+    /// List of systems (their ids), topsorted according to dependency graph.
     /// Used to return systems and their conditions to the registry.
-    pub(crate) systems_topsort: Vec<RegId>,
-    /// A list of sets (their ids), topsorted according to hierarchy graph.
+    pub(super) systems_topsort: Vec<RegId>,
+    /// List of sets (their ids), topsorted according to hierarchy graph.
     /// Used to return set conditions to the registry.
-    pub(crate) sets_topsort: Vec<RegId>,
+    pub(super) sets_topsort: Vec<RegId>,
 }
 
-impl Default for Runner {
+// SAFETY: the cell-wrapped data is only accessed by one thread at a time (runner thread)
+unsafe impl Sync for Schedule {}
+
+impl Default for Schedule {
     fn default() -> Self {
         Self {
             systems_topsort: Vec::new(),
@@ -89,20 +91,13 @@ impl Default for Runner {
     }
 }
 
-impl Runner {
-    pub(crate) fn simple(self) -> SimpleRunner {
-        SimpleRunner::with(self)
-    }
-
-    pub(crate) fn single_threaded(self) -> SingleThreadedRunner {
-        SingleThreadedRunner::with(self)
-    }
-}
-
-/// Runs the system or system set given by `schedule` on the world.
-pub fn run_scheduled(schedule: impl SystemLabel, world: &mut World) {
+/// Runs the system or system set given by `label` on the world.
+pub fn run_scheduled<M>(label: impl AsSystemLabel<M>, world: &mut World) {
     let mut reg = world.resource_mut::<SystemRegistry>();
-    let id = *reg.ids.get(&schedule.dyn_clone()).expect("unknown label");
+    let id = *reg
+        .ids
+        .get(&label.as_system_label().dyn_clone())
+        .expect("unknown label");
     match id {
         RegId::System(_) => {
             // TODO: Need to confirm that system is available before taking ownership.
@@ -130,74 +125,74 @@ pub fn run_scheduled(schedule: impl SystemLabel, world: &mut World) {
                 .map(|container| container.insert(system_conditions));
         }
         RegId::Set(_) => {
+            // Take things out of the registry.
+            // TODO: Refresh set metadata and confirm nothing is missing from registry.
             let mut reg = world.resource_mut::<SystemRegistry>();
-            let mut runner = reg.runners.get_mut(&id).unwrap().take().unwrap();
-            assert!(runner.systems.is_empty());
-            assert!(runner.system_conditions.is_empty());
-            assert!(runner.set_conditions.is_empty());
+            let mut schedule = reg.set_schedules.get_mut(&id).unwrap().take().unwrap();
+            assert!(schedule.systems.is_empty());
+            assert!(schedule.system_conditions.is_empty());
+            assert!(schedule.set_conditions.is_empty());
 
-            // TODO: Need to refresh set metadata first.
-            // TODO: Then, need to confirm that all its systems are available before taking ownership.
-            for sys_id in runner.systems_topsort.iter() {
-                runner
-                    .systems
-                    .push(reg.systems.get_mut(&sys_id).unwrap().take().unwrap());
+            for sys_id in schedule.systems_topsort.iter() {
+                let system = reg.systems.get_mut(&sys_id).unwrap().take().unwrap();
+                schedule.systems.push(RefCell::new(system));
 
-                runner.system_conditions.push(
-                    reg.system_conditions
-                        .get_mut(&sys_id)
-                        .unwrap()
-                        .take()
-                        .unwrap(),
-                );
+                let conditions = reg
+                    .system_conditions
+                    .get_mut(&sys_id)
+                    .unwrap()
+                    .take()
+                    .unwrap();
+
+                schedule.system_conditions.push(RefCell::new(conditions));
             }
 
-            for set_id in runner.sets_topsort.iter() {
-                runner
-                    .set_conditions
-                    .push(reg.set_conditions.get_mut(&set_id).unwrap().take().unwrap());
+            for set_id in schedule.sets_topsort.iter() {
+                let conditions = reg.set_conditions.get_mut(&set_id).unwrap().take().unwrap();
+                schedule.set_conditions.push(RefCell::new(conditions));
             }
 
-            let mut runner = runner.single_threaded();
-            runner.run(world);
-            let mut runner = runner.into_inner();
+            // TODO: Select from simple, single-threaded, and multi-threaded.
+            let mut runner = SingleThreadedRunner::new();
+            runner.init(&mut schedule);
+            runner.run(&mut schedule, world);
 
-            let sys_iter = runner.systems_topsort.iter().zip(
-                runner
+            // Return things to the registry.
+            let sys_iter = schedule.systems_topsort.iter().zip(
+                schedule
                     .systems
                     .drain(..)
-                    .zip(runner.system_conditions.drain(..)),
+                    .zip(schedule.system_conditions.drain(..)),
             );
 
-            let sub_iter = runner
+            let sub_iter = schedule
                 .sets_topsort
                 .iter()
-                .zip(runner.set_conditions.drain(..));
+                .zip(schedule.set_conditions.drain(..));
 
-            // If the systems and sets were removed while they were running,
-            // they'll just be dropped here.
-            // TODO: Say something if container wasn't empty.
-            // TODO: User might be doing something weird (removing systems then re-adding under same name).
+            // If user removed anything that was just running, everything will be dropped here.
+            // No risk of overwriting valid data since the registry ids are unique (`u64`).
+            // TODO: Log message when stuff gets dropped.
             let mut reg = world.resource_mut::<SystemRegistry>();
-            for (sys_id, (system, run_criteria)) in sys_iter {
+            for (sys_id, (system, conditions)) in sys_iter {
                 reg.systems
                     .get_mut(&sys_id)
-                    .map(|container| container.insert(system));
+                    .map(|container| container.insert(system.into_inner()));
 
                 reg.system_conditions
                     .get_mut(&sys_id)
-                    .map(|container| container.insert(run_criteria));
+                    .map(|container| container.insert(conditions.into_inner()));
             }
 
-            for (set_id, run_criteria) in sub_iter {
+            for (set_id, conditions) in sub_iter {
                 reg.set_conditions
                     .get_mut(&set_id)
-                    .map(|container| container.insert(run_criteria));
+                    .map(|container| container.insert(conditions.into_inner()));
             }
 
-            reg.runners
+            reg.set_schedules
                 .get_mut(&id)
-                .map(|container| container.insert(runner));
+                .map(|container| container.insert(schedule));
         }
     }
 }

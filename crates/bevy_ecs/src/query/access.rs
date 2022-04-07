@@ -18,7 +18,7 @@ pub struct Access<T: SparseSetIndex> {
     reads_all: bool,
     /// Does this have exclusive access to all elements in the collection?
     /// This field exists as a performance optimization for `&mut World`.
-    pub(crate) writes_all: bool,
+    writes_all: bool,
     marker: PhantomData<T>,
 }
 
@@ -72,15 +72,35 @@ impl<T: SparseSetIndex> Access<T> {
         }
     }
 
-    /// Sets this as having access to all indexed elements.
+    /// Sets this as having access to all indexed elements (i.e. `&World` or `&mut World`).
     pub(crate) fn read_all(&mut self) {
         self.reads_all = true;
     }
 
-    /// Sets this as having exclusive access to all indexed elements.
+    /// Sets this as having exclusive access to all indexed elements (i.e. `&mut World`).
     pub(crate) fn write_all(&mut self) {
         self.reads_all = true;
         self.writes_all = true;
+    }
+
+    /// Returns `true` if this has access to all indexed elements (i.e. `&World` or `&mut World`).
+    #[inline]
+    pub(crate) fn has_read_all(&self) -> bool {
+        self.reads_all
+    }
+
+    /// Returns `true` if this has exclusive access to all indexed elements (i.e. `&mut World`).
+    #[inline]
+    pub(crate) fn has_write_all(&self) -> bool {
+        debug_assert!(self.reads_all);
+        self.writes_all
+    }
+
+    /// Returns `true` if this does not have access to any indexed elements.
+    pub fn is_empty(&self) -> bool {
+        self.reads_all == false
+            && self.writes_all == false
+            && self.reads_and_writes.count_ones(..) == 0
     }
 
     /// Removes all accesses.

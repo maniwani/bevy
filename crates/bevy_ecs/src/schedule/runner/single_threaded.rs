@@ -1,5 +1,5 @@
 use crate::{
-    schedule::{Runner, RunnerApplyBuffers, SystemRunner},
+    schedule::{Runner, RunnerApplyBuffers, Schedule},
     world::World,
 };
 
@@ -9,7 +9,6 @@ use fixedbitset::FixedBitSet;
 
 /// Runs systems on a single thread.
 pub struct SingleThreadedRunner {
-    inner: Runner,
     /// Sets whose run criteria have either been evaluated or skipped.
     visited_sets: FixedBitSet,
     /// Systems that have completed.
@@ -18,86 +17,66 @@ pub struct SingleThreadedRunner {
     unapplied_systems: FixedBitSet,
 }
 
-impl SystemRunner for SingleThreadedRunner {
-    fn run(&mut self, world: &mut World) {
-        self.rebuild_metadata();
-        self.run_inner(world);
-    }
-}
-
-impl SingleThreadedRunner {
-    pub(crate) fn with(inner: Runner) -> Self {
+impl Default for SingleThreadedRunner {
+    fn default() -> Self {
         Self {
-            inner,
             visited_sets: FixedBitSet::new(),
             completed_systems: FixedBitSet::new(),
             unapplied_systems: FixedBitSet::new(),
         }
     }
+}
 
-    pub(crate) fn into_inner(self) -> Runner {
-        self.inner
-    }
-
-    fn rebuild_metadata(&mut self) {
+impl Runner for SingleThreadedRunner {
+    fn init(&mut self, schedule: &mut Schedule) {
         // pre-allocate space
-        let sys_count = self.inner.systems.len();
-        let set_count = self.inner.set_conditions.len();
+        let sys_count = schedule.systems.len();
+        let set_count = schedule.set_conditions.len();
         self.visited_sets.grow(set_count);
         self.completed_systems.grow(sys_count);
         self.unapplied_systems.grow(sys_count);
     }
 
-    fn run_inner(&mut self, world: &mut World) {
-        #[cfg(feature = "trace")]
-        let _schedule_span = bevy_utils::tracing::info_span!("schedule").entered();
-
+    fn run(&mut self, schedule: &mut Schedule, world: &mut World) {
         // insert this resource if it doesn't exist
         world.init_resource::<RunnerApplyBuffers>();
-
-        for sys_idx in 0..self.inner.systems.len() {
+        #[cfg(feature = "trace")]
+        let _schedule_span = bevy_utils::tracing::info_span!("run_schedule").entered();
+        for sys_idx in 0..schedule.systems.len() {
             if self.completed_systems.contains(sys_idx) {
                 continue;
             }
 
-            let system = &mut self.inner.systems[sys_idx];
-
+            let system = schedule.systems[sys_idx].get_mut();
             #[cfg(feature = "trace")]
             let should_run_span =
-                bevy_utils::tracing::info_span!("test_conditions", name = &*system.name())
+                bevy_utils::tracing::info_span!("check_conditions", name = &*system.name())
                     .entered();
 
             let mut should_run = true;
-
             // evaluate set run criteria in hierarchical order
-            let system_sets = self.inner.system_sets.get(&sys_idx).unwrap();
-            for set_idx in system_sets.ones() {
+            for set_idx in schedule.system_sets[&sys_idx].ones() {
                 if self.visited_sets.contains(set_idx) {
                     continue;
                 } else {
                     self.visited_sets.set(set_idx, true);
                 }
 
-                let conditions_met =
-                    self.inner.set_conditions[set_idx]
-                        .iter_mut()
-                        .all(|condition| {
-                            #[cfg(feature = "trace")]
-                            let _condition_span = bevy_utils::tracing::info_span!(
-                                "condition",
-                                name = &*condition.name()
-                            )
+                let set_conditions = schedule.set_conditions[set_idx].get_mut();
+                let set_conditions_met = set_conditions.iter_mut().all(|condition| {
+                    #[cfg(feature = "trace")]
+                    let _condition_span =
+                        bevy_utils::tracing::info_span!("condition", name = &*condition.name())
                             .entered();
-                            condition.run((), world)
-                        });
+                    condition.run((), world)
+                });
 
-                if !conditions_met {
+                if !set_conditions_met {
                     // skip all descendant systems
-                    let set_systems = self.inner.set_systems.get(&set_idx).unwrap();
-                    self.completed_systems.union_with(&set_systems);
+                    self.completed_systems.union_with(&schedule.set_systems[&set_idx]);
                 }
 
-                should_run &= conditions_met;
+                should_run &= set_conditions_met;
             }
 
             if !should_run {
@@ -105,15 +84,14 @@ impl SingleThreadedRunner {
             }
 
             // evaluate the system's run criteria
-            should_run = self.inner.system_conditions[sys_idx]
-                .iter_mut()
-                .all(|condition| {
-                    #[cfg(feature = "trace")]
-                    let _condition_span =
-                        bevy_utils::tracing::info_span!("condition", name = &*condition.name())
-                            .entered();
-                    condition.run((), world)
-                });
+            let system_conditions = schedule.system_conditions[sys_idx].get_mut();
+            should_run = system_conditions.iter_mut().all(|condition| {
+                #[cfg(feature = "trace")]
+                let _condition_span =
+                    bevy_utils::tracing::info_span!("condition", name = &*condition.name())
+                        .entered();
+                condition.run((), world)
+            });
 
             #[cfg(feature = "trace")]
             should_run_span.exit();
@@ -136,15 +114,21 @@ impl SingleThreadedRunner {
             self.unapplied_systems.set(sys_idx, true);
 
             // poll for `apply_buffers`
-            self.check_apply_buffers(world);
+            self.check_apply_buffers(schedule, world);
         }
 
         // poll for `apply_buffers`
-        self.check_apply_buffers(world);
+        self.check_apply_buffers(schedule, world);
+    }
+}
+
+impl SingleThreadedRunner {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     #[inline]
-    fn check_apply_buffers(&mut self, world: &mut World) {
+    fn check_apply_buffers(&mut self, schedule: &mut Schedule, world: &mut World) {
         let mut should_apply_buffers = world.resource_mut::<RunnerApplyBuffers>();
         if should_apply_buffers.0 {
             // reset flag
@@ -153,7 +137,7 @@ impl SingleThreadedRunner {
             // apply buffers in topological order
             // TODO: determinism
             for sys_idx in self.unapplied_systems.ones() {
-                let system = self.inner.systems.get_mut(sys_idx).unwrap();
+                let system = schedule.systems[sys_idx].get_mut();
                 #[cfg(feature = "trace")]
                 let _apply_buffers_span =
                     bevy_utils::tracing::info_span!("apply_buffers", name = &*system.name())
@@ -168,85 +152,65 @@ impl SingleThreadedRunner {
 
 /// Runs systems on a single thread and immediately applies their buffers.
 pub struct SimpleRunner {
-    inner: Runner,
     /// Sets whose run criteria have either been evaluated or skipped.
     visited_sets: FixedBitSet,
     /// Systems that have completed.
     completed_systems: FixedBitSet,
 }
 
-impl SystemRunner for SimpleRunner {
-    fn run(&mut self, world: &mut World) {
-        self.rebuild_metadata();
-        self.run_inner(world);
-    }
-}
-
-impl SimpleRunner {
-    pub(crate) fn with(inner: Runner) -> Self {
+impl Default for SimpleRunner {
+    fn default() -> Self {
         Self {
-            inner,
             visited_sets: FixedBitSet::new(),
             completed_systems: FixedBitSet::new(),
         }
     }
+}
 
-    pub(crate) fn into_inner(self) -> Runner {
-        self.inner
-    }
-
-    fn rebuild_metadata(&mut self) {
+impl Runner for SimpleRunner {
+    fn init(&mut self, schedule: &mut Schedule) {
         // pre-allocate space
-        let sys_count = self.inner.systems.len();
-        let set_count = self.inner.set_conditions.len();
+        let sys_count = schedule.systems.len();
+        let set_count = schedule.set_conditions.len();
         self.visited_sets.grow(set_count);
         self.completed_systems.grow(sys_count);
     }
 
-    fn run_inner(&mut self, world: &mut World) {
+    fn run(&mut self, schedule: &mut Schedule, world: &mut World) {
         #[cfg(feature = "trace")]
-        let _schedule_span = bevy_utils::tracing::info_span!("schedule").entered();
-
-        for sys_idx in 0..self.inner.systems.len() {
+        let _schedule_span = bevy_utils::tracing::info_span!("run_schedule").entered();
+        for sys_idx in 0..schedule.systems.len() {
             if self.completed_systems.contains(sys_idx) {
                 continue;
             }
 
-            let system = &mut self.inner.systems[sys_idx];
-
+            let system = schedule.systems[sys_idx].get_mut();
             #[cfg(feature = "trace")]
             let should_run_span =
-                bevy_utils::tracing::info_span!("test_conditions", name = &*system.name())
+                bevy_utils::tracing::info_span!("check_conditions", name = &*system.name())
                     .entered();
 
             let mut should_run = true;
-
             // evaluate set run criteria in hierarchical order
-            let system_sets = self.inner.system_sets.get(&sys_idx).unwrap();
-            for set_idx in system_sets.ones() {
+            for set_idx in schedule.system_sets[&sys_idx].ones() {
                 if self.visited_sets.contains(set_idx) {
                     continue;
                 } else {
                     self.visited_sets.set(set_idx, true);
                 }
 
-                let conditions_met =
-                    self.inner.set_conditions[set_idx]
-                        .iter_mut()
-                        .all(|condition| {
-                            #[cfg(feature = "trace")]
-                            let _condition_span = bevy_utils::tracing::info_span!(
-                                "condition",
-                                name = &*condition.name()
-                            )
+                let set_conditions = schedule.set_conditions[set_idx].get_mut();
+                let conditions_met = set_conditions.iter_mut().all(|condition| {
+                    #[cfg(feature = "trace")]
+                    let _condition_span =
+                        bevy_utils::tracing::info_span!("condition", name = &*condition.name())
                             .entered();
-                            condition.run((), world)
-                        });
+                    condition.run((), world)
+                });
 
                 if !conditions_met {
                     // skip all descendant systems
-                    let set_systems = self.inner.set_systems.get(&set_idx).unwrap();
-                    self.completed_systems.union_with(&set_systems);
+                    self.completed_systems.union_with(&schedule.set_systems[&set_idx]);
                 }
 
                 should_run &= conditions_met;
@@ -257,15 +221,14 @@ impl SimpleRunner {
             }
 
             // evaluate the system's run criteria
-            should_run = self.inner.system_conditions[sys_idx]
-                .iter_mut()
-                .all(|condition| {
-                    #[cfg(feature = "trace")]
-                    let _condition_span =
-                        bevy_utils::tracing::info_span!("condition", name = &*condition.name())
-                            .entered();
-                    condition.run((), world)
-                });
+            let system_conditions = schedule.system_conditions[sys_idx].get_mut();
+            should_run = system_conditions.iter_mut().all(|condition| {
+                #[cfg(feature = "trace")]
+                let _condition_span =
+                    bevy_utils::tracing::info_span!("condition", name = &*condition.name())
+                        .entered();
+                condition.run((), world)
+            });
 
             #[cfg(feature = "trace")]
             should_run_span.exit();
@@ -289,5 +252,11 @@ impl SimpleRunner {
                 bevy_utils::tracing::info_span!("apply_buffers", name = &*system.name()).entered();
             system.apply_buffers(world);
         }
+    }
+}
+
+impl SimpleRunner {
+    pub fn new() -> Self {
+        Self::default()
     }
 }

@@ -142,11 +142,14 @@ pub struct SystemRegistry {
     ids: HashMap<BoxedSystemLabel, RegId>,
     // names: HashMap<RegId, BoxedSystemLabel>,
     hier: DiGraphMap<RegId, ()>,
-    pub(crate) systems: HashMap<RegId, Option<BoxedSystem>>,
-    pub(crate) system_conditions: HashMap<RegId, Option<Vec<BoxedRunCondition>>>,
-    pub(crate) runners: HashMap<RegId, Option<Runner>>,
-    pub(crate) set_conditions: HashMap<RegId, Option<Vec<BoxedRunCondition>>>,
-    pub(crate) set_metadata: HashMap<RegId, SetMetadata>,
+    
+    systems: HashMap<RegId, Option<BoxedSystem>>,
+    system_conditions: HashMap<RegId, Option<Vec<BoxedRunCondition>>>,
+    
+    set_conditions: HashMap<RegId, Option<Vec<BoxedRunCondition>>>,
+    set_metadata: HashMap<RegId, SetMetadata>,
+    set_schedules: HashMap<RegId, Option<Schedule>>,
+
     uninit_nodes: Vec<Scheduling>,
 }
 
@@ -159,7 +162,7 @@ impl Default for SystemRegistry {
             hier: DiGraphMap::new(),
             systems: HashMap::new(),
             system_conditions: HashMap::new(),
-            runners: HashMap::new(),
+            set_schedules: HashMap::new(),
             set_conditions: HashMap::new(),
             set_metadata: HashMap::new(),
             uninit_nodes: Vec::new(),
@@ -215,7 +218,7 @@ impl SystemRegistry {
 
         self.set_metadata.insert(id, SetMetadata::default());
         self.set_conditions.insert(id, Some(conditions));
-        self.runners.insert(id, None);
+        self.set_schedules.insert(id, None);
         self.uninit_nodes.push(scheduling);
 
         id
@@ -661,9 +664,9 @@ impl SystemRegistry {
             system_sets.insert(sys_idx, bitset);
         }
 
-        self.runners.insert(
+        self.set_schedules.insert(
             set_id,
-            Some(Runner {
+            Some(Schedule {
                 systems: Vec::with_capacity(sys_count),
                 system_conditions: Vec::with_capacity(sys_count),
                 set_conditions: Vec::with_capacity(set_count),

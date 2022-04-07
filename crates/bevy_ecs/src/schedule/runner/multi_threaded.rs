@@ -2,7 +2,7 @@ use crate::{
     archetype::ArchetypeComponentId,
     cell::SemiSafeCell,
     query::Access,
-    schedule::{Runner, RunnerApplyBuffers, SystemRunner},
+    schedule::{Runner, RunnerApplyBuffers, Schedule},
     world::World,
 };
 
@@ -17,28 +17,27 @@ use fixedbitset::FixedBitSet;
 struct SystemTaskMetadata {
     /// Notifies system task to start running.
     start_sender: Sender<()>,
-    /// Receives the start signal.
+    /// Receives the start signal from the runner.
     start_receiver: Receiver<()>,
-    /// Indices of the systems that directly depend on this one.
+    /// Indices of the systems that directly depend on the system.
     dependents: Vec<usize>,
     /// The number of dependencies the system has in total.
     dependencies_total: usize,
-    /// The number of dependencies the system has that have not finished.
+    /// The number of dependencies the system has that have not completed.
     dependencies_remaining: usize,
-    /// The `ArchetypeComponentId` access of this system.
+    /// The `ArchetypeComponentId` access of the system.
     // This exists because systems are borrowed while they're running, and we have to
-    // clear and rebuild the executor's active access whenever systems complete.
+    // clear and rebuild the runner's active access whenever systems complete.
     archetype_component_access: Access<ArchetypeComponentId>,
-    /// Can the system access the data it needs from any thread?
-    is_send: bool,
+    /// Does the system access data that only exists on a specific thread?
+    non_send_access: bool,
 }
 
 /// A `Runner` that run systems concurrently using a task pool.
 pub struct MultiThreadedRunner {
-    inner: Runner,
     /// Metadata for scheduling and running system tasks.
     system_task_metadata: Vec<SystemTaskMetadata>,
-    /// Notifies executor that system tasks have completed.
+    /// Notifies runner that system tasks have completed.
     finish_sender: Sender<usize>,
     /// Receives task completion events.
     finish_receiver: Receiver<usize>,
@@ -46,8 +45,7 @@ pub struct MultiThreadedRunner {
     active_archetype_component_access: Access<ArchetypeComponentId>,
     /// Is a non-send system task currently running?
     non_send_task_running: bool,
-
-    /// Sets whose run criteria have been evaluated or skipped.
+    /// System sets whose conditions have been evaluated or skipped.
     visited_sets: FixedBitSet,
     /// Systems that have no remaining dependencies and are waiting to run.
     ready_systems: FixedBitSet,
@@ -71,18 +69,11 @@ impl Default for MultiThreadedRunner {
     }
 }
 
-impl SystemRunner for MultiThreadedRunner {
-    fn run(&mut self, world: &mut World) {
-        self.rebuild_metadata();
-        self.run_inner(world);
-    }
-}
-
-impl MultiThreadedRunner {
-    fn rebuild_metadata(&mut self) {
+impl Runner for MultiThreadedRunner {
+    fn init(&mut self, schedule: &mut Schedule) {
         // pre-allocate space
-        let sys_count = self.inner.systems.len();
-        let set_count = self.inner.set_conditions.len();
+        let sys_count = schedule.systems.len();
+        let set_count = schedule.set_conditions.len();
 
         self.visited_sets.grow(set_count);
         self.ready_systems.grow(sys_count);
@@ -96,8 +87,7 @@ impl MultiThreadedRunner {
 
         for index in 0..sys_count {
             let (start_sender, start_receiver) = async_channel::bounded(1);
-            let (num_dependencies, dependents) =
-                self.inner.system_deps.get(&index).unwrap().clone();
+            let (num_dependencies, dependents) = schedule.system_deps[&index].clone();
 
             self.system_task_metadata.push(SystemTaskMetadata {
                 start_sender,
@@ -105,16 +95,15 @@ impl MultiThreadedRunner {
                 dependents,
                 dependencies_total: num_dependencies,
                 dependencies_remaining: num_dependencies,
-                is_send: self.inner.systems[index].is_send(),
+                non_send_access: !schedule.systems[index].get_mut().is_send(),
                 archetype_component_access: Default::default(),
             });
         }
     }
 
-    #[inline]
-    fn run_inner(&mut self, world: &mut World) {
+    fn run(&mut self, schedule: &mut Schedule, world: &mut World) {
         #[cfg(feature = "trace")]
-        let _schedule_span = bevy_utils::tracing::info_span!("schedule").entered();
+        let _schedule_span = bevy_utils::tracing::info_span!("run_schedule").entered();
 
         let compute_pool = world
             .get_resource_or_insert_with(|| ComputeTaskPool(TaskPool::default()))
@@ -122,6 +111,7 @@ impl MultiThreadedRunner {
 
         // insert this resource if it doesn't exist
         world.init_resource::<RunnerApplyBuffers>();
+        let world = SemiSafeCell::from_mut(world);
 
         // systems with no dependencies are ready
         for (index, system_meta) in self.system_task_metadata.iter_mut().enumerate() {
@@ -130,16 +120,18 @@ impl MultiThreadedRunner {
             }
         }
 
-        let world = SemiSafeCell::from_mut(world);
-
         compute_pool.scope(|scope| {
-            let mut executor = |scope| async {
+            let mut runner = |scope| async {
                 while self.completed_systems.count_ones(..) != self.completed_systems.len() {
-                    self.spawn_system_tasks(scope, world).await;
+                    // TODO: also skip if apply_buffers pending
+                    // `&mut World` conflicts with updating system access
+                    if !self.active_archetype_component_access.has_write_all() {
+                        self.spawn_system_tasks(scope, schedule, world).await;
+                    }
+
                     if self.running_systems.count_ones(..) != 0 {
                         #[cfg(feature = "trace")]
-                        let _await_span =
-                            bevy_utils::tracing::info_span!("await_tasks").entered();
+                        let await_span = bevy_utils::tracing::info_span!("await_tasks").entered();
 
                         // wait until something finishes
                         let index = self
@@ -149,10 +141,11 @@ impl MultiThreadedRunner {
                             .unwrap_or_else(|error| unreachable!(error));
 
                         #[cfg(feature = "trace")]
-                        drop(wait_guard);
+                        drop(await_span);
 
+                        // one system completed
                         self.finish_system_and_signal_dependents(index);
-                        // more than one could have finished
+                        // maybe more
                         while let Ok(index) = self.finish_receiver.try_recv() {
                             self.finish_system_and_signal_dependents(index);
                         }
@@ -166,19 +159,23 @@ impl MultiThreadedRunner {
                         }
                     }
 
-                    if self.running_systems.count_ones(..) == 0 {
-                        // poll for `apply_buffers`
-                        // SAFETY: cannot alias because no other systems are running
-                        unsafe { self.check_apply_buffers(world.as_mut()) };
+                    // TODO: What if `&mut World` system and a system with no access are running
+                    // TODO: at the same time and the `&mut World` system finishes first?
+                    // poll for `apply_buffers`
+                    if self.active_archetype_component_access.is_empty() {
+                        // SAFETY: no data in the world is being accessed
+                        let world = unsafe { world.as_mut() };
+                        self.check_apply_buffers(schedule, world);
                     }
                 }
                 debug_assert_eq!(self.ready_systems.count_ones(..), 0);
                 debug_assert_eq!(self.running_systems.count_ones(..), 0);
-
+                assert!(self.active_archetype_component_access.is_empty());
                 // poll for `apply_buffers`
-                // SAFETY: cannot alias because no other systems are running
-                unsafe {
-                    self.check_apply_buffers(world.as_mut());
+                {
+                    // SAFETY: no data in the world is being accessed
+                    let world = unsafe { world.as_mut() };
+                    self.check_apply_buffers(schedule, world);
                 }
 
                 self.visited_sets.clear();
@@ -186,45 +183,50 @@ impl MultiThreadedRunner {
             };
 
             #[cfg(feature = "trace")]
-            let executor_span = bevy_utils::tracing::info_span!("executor task");
+            let runner_span = bevy_utils::tracing::info_span!("runner_task");
             #[cfg(feature = "trace")]
-            let executor = executor.instrument(executor_span);
+            let runner = runner.instrument(runner_span);
             // TODO: modify `bevy_tasks` so we can spawn tasks from `&Scope`
             // TODO: this can't work because of the `&mut` and LocalExecutor
-            scope.spawn(executor(scope));
+            scope.spawn(runner(scope));
         });
+    }
+}
+
+impl MultiThreadedRunner {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     async fn spawn_system_tasks<'scope, 'world: 'scope>(
         &mut self,
-        scope: &'scope mut Scope<'scope, ()>,
+        scope: &'scope Scope<'scope, ()>,
+        schedule: &'scope Schedule,
         world: SemiSafeCell<'world, World>,
     ) {
         #[cfg(feature = "trace")]
-        let span = bevy_utils::tracing::info_span!("spawn system tasks");
-        #[cfg(feature = "trace")]
-        let _guard = span.enter();
+        let span = bevy_utils::tracing::info_span!("spawn_system_tasks").entered();
 
         // TODO: reduce loop overhead
         while let Some(index) = self.ready_systems.ones().next() {
-            if !self.system_can_run(index, world) {
+            if !self.system_can_run(index, schedule, world) {
                 continue;
             }
 
-            if !self.system_should_run(index, world) {
+            if !self.system_should_run(index, schedule, world) {
+                // alt. send a cancel signal here
                 continue;
             }
-
-            // SAFETY: splitting borrow, no aliasing
-            let system =
-                unsafe { &mut *core::slice::from_mut(&mut self.inner.systems[index]).as_mut_ptr() };
 
             let system_meta = &self.system_task_metadata[index];
             let start_receiver = system_meta.start_receiver.clone();
             let finish_sender = self.finish_sender.clone();
 
+            // SAFETY: no active references to this system
+            let system = unsafe { &mut *schedule.systems[index].as_ptr() };
+
             #[cfg(feature = "trace")]
-            let task_span = bevy_utils::tracing::info_span!("system task", name = &*system.name());
+            let task_span = bevy_utils::tracing::info_span!("system_task", name = &*system.name());
             #[cfg(feature = "trace")]
             let system_span = bevy_utils::tracing::info_span!("system", name = &*system.name());
 
@@ -236,7 +238,10 @@ impl MultiThreadedRunner {
 
                 #[cfg(feature = "trace")]
                 let system_guard = system_span.enter();
-                // SAFETY: access does not conflict with another running task
+                // SAFETY:
+                // - does not conflict with currently running systems
+                // - drops reference upon completion
+                // - completes before exiting the task scope
                 unsafe { system.run_unchecked((), world) };
                 #[cfg(feature = "trace")]
                 drop(system_guard);
@@ -250,11 +255,11 @@ impl MultiThreadedRunner {
             #[cfg(feature = "trace")]
             let task = task.instrument(task_span);
 
-            if system_meta.is_send {
-                scope.spawn(task);
-            } else {
+            if system_meta.non_send_access {
                 scope.spawn_local(task);
                 self.non_send_task_running = true;
+            } else {
+                scope.spawn(task);
             }
 
             system_meta
@@ -270,36 +275,40 @@ impl MultiThreadedRunner {
         }
     }
 
-    /// Checks if the data accessed by the system at `index` is available.
+    /// Evaluates the access of the system at `index` to determine if it can start.
     #[inline]
-    fn system_can_run(&mut self, index: usize, world: SemiSafeCell<World>) -> bool {
+    fn system_can_run(
+        &mut self,
+        index: usize,
+        schedule: &Schedule,
+        world: SemiSafeCell<World>,
+    ) -> bool {
+        let mut system = schedule.systems[index].borrow_mut();
+        #[cfg(feature = "trace")]
+        let _can_run_span =
+            bevy_utils::tracing::info_span!("check_access", name = &*system.name()).entered();
+
         let system_meta = &self.system_task_metadata[index];
-        if self.non_send_task_running && !system_meta.is_send {
-            // all non-`Send` systems conflict (they all have to run on same thread)
+        if self.non_send_task_running && system_meta.non_send_access {
+            // systems that access !Send data conflict on access to thread
             return false;
         }
 
-        // systems that don't borrow are still considered conflicts to avoid UB below
-        if self.active_archetype_component_access.writes_all {
-            return false;
-        }
-
-        let system = &mut self.inner.systems[index];
-
-        // SAFETY: `system_can_run` never gets here while system with `&mut World` is running
+        assert!(!self.active_archetype_component_access.has_write_all());
+        // SAFETY: system with `&mut World` cannot be running
         let world = unsafe { world.as_ref() };
         system.update_archetype_component_access(world);
 
-        // need the access of the system, its run criteria, and the run criteria of its not-yet-seen labels
         let mut access = system.archetype_component_access().clone();
-        for condition in self.inner.system_conditions[index].iter_mut() {
+        let mut system_conditions = schedule.system_conditions[index].borrow_mut();
+        for condition in system_conditions.iter_mut() {
             condition.update_archetype_component_access(world);
             access.extend(condition.archetype_component_access());
         }
 
-        let system_sets = self.inner.system_sets.get_mut(&index).unwrap();
-        for set_idx in system_sets.difference(&self.visited_sets) {
-            for condition in self.inner.set_conditions[set_idx].iter_mut() {
+        for set_idx in schedule.system_sets[&index].difference(&self.visited_sets) {
+            let mut set_conditions = schedule.set_conditions[set_idx].borrow_mut();
+            for condition in set_conditions.iter_mut() {
                 condition.update_archetype_component_access(world);
                 access.extend(condition.archetype_component_access());
             }
@@ -308,68 +317,32 @@ impl MultiThreadedRunner {
         access.is_compatible(&self.active_archetype_component_access)
     }
 
-    /// Evaluates the run criteria of the system at `index` to determine if it should run.
+    /// Evaluates the conditions of the system at `index` to determine if it should run.
     #[inline]
-    fn system_should_run(&mut self, index: usize, world: SemiSafeCell<World>) -> bool {
+    fn system_should_run(
+        &mut self,
+        index: usize,
+        schedule: &Schedule,
+        world: SemiSafeCell<World>,
+    ) -> bool {
+        #[cfg(feature = "trace")]
+        // SAFETY: no active references to this system
+        let system = schedule.systems[index].borrow();
         #[cfg(feature = "trace")]
         let _should_run_span =
-            bevy_utils::tracing::info_span!("test_conditions", name = &*system.name()).entered();
+            bevy_utils::tracing::info_span!("check_conditions", name = &*system.name()).entered();
 
         let mut should_run = true;
-
-        // evaluate the set run criteria in hierarchical order
-        // SAFETY: data is never mutated
-        let system_sets = unsafe {
-            &*core::slice::from_ref(self.inner.system_sets.get(&index).unwrap()).as_ptr()
-        };
-
-        for set_idx in system_sets.ones() {
+        // evaluate the set conditions in hierarchical order
+        for set_idx in schedule.system_sets[&index].ones() {
             if self.visited_sets.contains(set_idx) {
                 continue;
             } else {
                 self.visited_sets.set(set_idx, true);
             }
 
-            let conditions_met = self.inner.set_conditions[set_idx]
-                .iter_mut()
-                .all(|condition| {
-                    #[cfg(feature = "trace")]
-                    let _condition_span =
-                        bevy_utils::tracing::info_span!("condition", name = &*condition.name())
-                            .entered();
-                    // SAFETY: access does not conflict with another running task
-                    unsafe { condition.run_unchecked((), world) }
-                });
-
-            if !conditions_met {
-                // skip all descendant systems
-                // SAFETY: data is never mutated (this is a bad hack tho)
-                let set_systems = unsafe {
-                    &*core::slice::from_ref(self.inner.set_systems.get(&set_idx).unwrap()).as_ptr()
-                };
-
-                for sys_idx in set_systems.ones() {
-                    if self.completed_systems.contains(sys_idx) {
-                        // same system could be skipped multiple times
-                        continue;
-                    }
-
-                    self.skip_system_and_signal_dependents(sys_idx);
-                }
-            }
-
-            should_run &= conditions_met;
-        }
-
-        if !should_run {
-            // system was skipped above
-            return false;
-        }
-
-        // evaluate the system's run criteria
-        should_run = self.inner.system_conditions[index]
-            .iter_mut()
-            .all(|condition| {
+            let mut set_conditions = schedule.set_conditions[set_idx].borrow_mut();
+            let set_conditions_met = set_conditions.iter_mut().all(|condition| {
                 #[cfg(feature = "trace")]
                 let _condition_span =
                     bevy_utils::tracing::info_span!("condition", name = &*condition.name())
@@ -377,6 +350,34 @@ impl MultiThreadedRunner {
                 // SAFETY: access does not conflict with another running task
                 unsafe { condition.run_unchecked((), world) }
             });
+
+            if !set_conditions_met {
+                // skip all descendant systems
+                for sys_idx in schedule.set_systems[&set_idx].ones() {
+                    // same system could be skipped multiple times, only signal once
+                    if !self.completed_systems.contains(sys_idx) {
+                        self.skip_system_and_signal_dependents(sys_idx);
+                    }
+                }
+            }
+
+            should_run &= set_conditions_met;
+        }
+
+        if !should_run {
+            // system was skipped above
+            return false;
+        }
+
+        // evaluate the system's conditions
+        let mut system_conditions = schedule.system_conditions[index].borrow_mut();
+        should_run = system_conditions.iter_mut().all(|condition| {
+            #[cfg(feature = "trace")]
+            let _condition_span =
+                bevy_utils::tracing::info_span!("condition", name = &*condition.name()).entered();
+            // SAFETY: access does not conflict with another running task
+            unsafe { condition.run_unchecked((), world) }
+        });
 
         if !should_run {
             self.skip_system_and_signal_dependents(index);
@@ -388,7 +389,7 @@ impl MultiThreadedRunner {
 
     #[inline]
     fn finish_system_and_signal_dependents(&mut self, index: usize) {
-        if !self.system_task_metadata[index].is_send {
+        if self.system_task_metadata[index].non_send_access {
             self.non_send_task_running = false;
         }
         self.running_systems.set(index, false);
@@ -407,25 +408,26 @@ impl MultiThreadedRunner {
     #[inline]
     fn signal_dependents(&mut self, index: usize) {
         #[cfg(feature = "trace")]
-        let _span = bevy_utils::tracing::info_span!("signal_dependents");
+        let _span = bevy_utils::tracing::info_span!("signal_dependents").entered();
 
-        // SAFETY: system cannot have itself as a dependent (this is a bad hack tho)
-        let system_meta = unsafe {
-            &mut *core::slice::from_mut(&mut self.system_task_metadata[index]).as_mut_ptr()
-        };
+        // SAFETY: system cannot depend on itself
+        // TODO: replace with `get_many_mut`? (https://github.com/rust-lang/rust/pull/83608)
+        let system_meta =
+            unsafe { &*std::slice::from_ref(&self.system_task_metadata[index]).as_ptr() };
 
-        for &idx in system_meta.dependents.iter() {
-            let dependent_meta = &mut self.system_task_metadata[idx];
+        for &dep_idx in system_meta.dependents.iter() {
+            let dependent_meta = &mut self.system_task_metadata[dep_idx];
             dependent_meta.dependencies_remaining -= 1;
-            if (dependent_meta.dependencies_remaining == 0) && !self.completed_systems.contains(idx)
+            if (dependent_meta.dependencies_remaining == 0)
+                && !self.completed_systems.contains(dep_idx)
             {
-                self.ready_systems.set(idx, true);
+                self.ready_systems.set(dep_idx, true);
             }
         }
     }
 
     #[inline]
-    fn check_apply_buffers(&mut self, world: &mut World) {
+    fn check_apply_buffers(&mut self, schedule: &Schedule, world: &mut World) {
         let mut should_apply_buffers = world.resource_mut::<RunnerApplyBuffers>();
         if should_apply_buffers.0 {
             // reset flag
@@ -433,8 +435,8 @@ impl MultiThreadedRunner {
 
             // apply commands in topological order
             // TODO: determinism
-            for index in self.unapplied_systems.ones() {
-                let system = self.inner.systems.get_mut(index).unwrap();
+            for sys_idx in self.unapplied_systems.ones() {
+                let mut system = schedule.systems[sys_idx].borrow_mut();
                 #[cfg(feature = "trace")]
                 let _apply_buffers_span =
                     bevy_utils::tracing::info_span!("apply_buffers", name = &*system.name())
