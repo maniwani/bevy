@@ -29,7 +29,7 @@ pub mod prelude {
 use bevy_app::prelude::*;
 use bevy_asset::AddAsset;
 use bevy_ecs::{entity::Entity, schedule::IntoScheduledSystem};
-use bevy_render::{RenderApp, RenderStage};
+use bevy_render::{RenderApp, RenderSet};
 use bevy_sprite::SpriteSystem;
 
 pub type DefaultTextPipeline = TextPipeline<Entity>;
@@ -46,12 +46,13 @@ impl Plugin for TextPlugin {
             .register_type::<HorizontalAlign>()
             .init_asset_loader::<FontLoader>()
             .insert_resource(DefaultTextPipeline::default())
-            .add_system_to_stage(CoreStage::PostUpdate, text2d_system);
+            .add_system(text2d_system.to(CoreSet::PostUpdate));
 
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.add_system_to_stage(
-                RenderStage::Extract,
-                extract_text2d_sprite.after(SpriteSystem::ExtractSprites),
+            render_app.add_system(
+                extract_text2d_sprite
+                    .after(SpriteSystem::ExtractSprites)
+                    .to(RenderSet::Extract),
             );
         }
     }

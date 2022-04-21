@@ -36,7 +36,7 @@ use bevy_reflect::TypeUuid;
 use bevy_render::{
     render_phase::AddRenderCommand,
     render_resource::{Shader, SpecializedRenderPipelines},
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
 
 #[derive(Default)]
@@ -70,12 +70,13 @@ impl Plugin for SpritePlugin {
                 .init_resource::<ExtractedSprites>()
                 .init_resource::<SpriteAssetEvents>()
                 .add_render_command::<Transparent2d, DrawSprite>()
-                .add_system_to_stage(
-                    RenderStage::Extract,
-                    render::extract_sprites.label(SpriteSystem::ExtractSprites),
+                .add_system(
+                    render::extract_sprites
+                        .to(SpriteSystem::ExtractSprites)
+                        .to(RenderSet::Extract),
                 )
-                .add_system_to_stage(RenderStage::Extract, render::extract_sprite_events)
-                .add_system_to_stage(RenderStage::Queue, queue_sprites);
+                .add_system(render::extract_sprite_events.to(RenderSet::Extract))
+                .add_system(queue_sprites.to(RenderSet::Queue));
         };
     }
 }

@@ -86,7 +86,7 @@ fn propagate_recursive(
 #[cfg(test)]
 mod test {
     use bevy_ecs::{
-        schedule::{Schedule, Stage, SystemStage},
+        schedule::Schedule,
         system::{CommandQueue, Commands},
         world::World,
     };

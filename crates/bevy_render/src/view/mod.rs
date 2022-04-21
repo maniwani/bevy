@@ -15,7 +15,7 @@ use crate::{
     render_resource::{std140::AsStd140, DynamicUniformVec, Texture, TextureView},
     renderer::{RenderDevice, RenderQueue},
     texture::{BevyDefault, TextureCache},
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
 use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
@@ -31,11 +31,12 @@ impl Plugin for ViewPlugin {
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<ViewUniforms>()
-                .add_system_to_stage(RenderStage::Extract, extract_msaa)
-                .add_system_to_stage(RenderStage::Prepare, prepare_view_uniforms)
-                .add_system_to_stage(
-                    RenderStage::Prepare,
-                    prepare_view_targets.after(WindowSystem::Prepare),
+                .add_system(extract_msaa.to(RenderSet::Extract))
+                .add_system(prepare_view_uniforms.to(RenderSet::Prepare))
+                .add_system(
+                    prepare_view_targets
+                        .to(RenderSet::Prepare)
+                        .after(WindowSystem::Prepare),
                 );
         }
     }

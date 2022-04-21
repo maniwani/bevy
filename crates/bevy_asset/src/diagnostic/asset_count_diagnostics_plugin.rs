@@ -1,6 +1,7 @@
 use crate::{Asset, Assets};
 use bevy_app::prelude::*;
 use bevy_diagnostic::{Diagnostic, DiagnosticId, Diagnostics, MAX_DIAGNOSTIC_NAME_WIDTH};
+use bevy_ecs::schedule::IntoScheduledSystem;
 use bevy_ecs::system::{Res, ResMut};
 
 /// Adds "asset count" diagnostic to an App
@@ -18,7 +19,7 @@ impl<T: Asset> Default for AssetCountDiagnosticsPlugin<T> {
 
 impl<T: Asset> Plugin for AssetCountDiagnosticsPlugin<T> {
     fn build(&self, app: &mut App) {
-        app.add_startup_system(Self::setup_system)
+        app.add_system(Self::setup_system.to(AppSet::Startup))
             .add_system(Self::diagnostic_system);
     }
 }

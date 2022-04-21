@@ -10,10 +10,11 @@ use bevy_input::{
 pub use winit_config::*;
 pub use winit_windows::*;
 
-use bevy_app::{App, AppExit, CoreStage, Plugin};
+use bevy_app::{App, AppExit, Plugin};
+use bevy_core::CoreSet;
 use bevy_ecs::{
     event::{Events, ManualEventReader},
-    schedule::{IntoScheduledSet, IntoScheduledSystem},
+    schedule::IntoScheduledSystem,
     world::World,
 };
 use bevy_math::{ivec2, DVec2, Vec2};

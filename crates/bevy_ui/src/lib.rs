@@ -74,35 +74,34 @@ impl Plugin for UiPlugin {
             .register_type::<Val>()
             .register_type::<widget::Button>()
             .register_type::<widget::ImageMode>()
-            .add_system_to_stage(
-                CoreStage::PreUpdate,
-                ui_focus_system.label(UiSystem::Focus).after(InputSystem),
+            .add_system(
+                ui_focus_system
+                    .to(UiSystem::Focus)
+                    .after(InputSystem)
+                    .to(CoreSet::PreUpdate),
             )
-            // add these stages to front because these must run before transform update systems
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
-                widget::text_system.before(UiSystem::Flex),
+            .add_system(
+                widget::text_system
+                    .before(UiSystem::Flex)
+                    .to(CoreSet::PostUpdate),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
-                widget::image_node_system.before(UiSystem::Flex),
+            .add_system(
+                widget::image_node_system
+                    .before(UiSystem::Flex)
+                    .to(CoreSet::PostUpdate),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
+            .add_system(
                 flex_node_system
-                    .label(UiSystem::Flex)
-                    .before(TransformSystem::TransformPropagate),
+                    .to(UiSystem::Flex)
+                    .before(TransformSystem::TransformPropagate)
+                    .to(CoreSet::PostUpdate),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
+            .add_system(
                 ui_z_system
                     .after(UiSystem::Flex)
                     .before(TransformSystem::TransformPropagate),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
-                update_clipping_system.after(TransformSystem::TransformPropagate),
-            );
+            .add_system(update_clipping_system.after(TransformSystem::TransformPropagate));
 
         crate::render::build_ui_render(app);
     }

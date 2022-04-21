@@ -7,7 +7,7 @@ fn main() {
     let mut world = World::new();
     world.insert_resource(Events::<MyEvent>::default());
 
-    // Create a schedule and a stage
+    // Create a schedule
     let mut schedule = Schedule::default();
 
     // Events need to be updated in every frame. This update should happen before we use
@@ -15,17 +15,11 @@ fn main() {
     // Here we will use a stage called "first" that will always run it's systems before the Stage
     // called "second". In "first" we update the events and in "second" we run our systems
     // sending and receiving events.
-    let mut first = SystemStage::parallel();
-    first.add_system(Events::<MyEvent>::update_system);
-    schedule.add_stage("first", first);
+    schedule.add_system(Events::<MyEvent>::update_system);
 
-    // Add systems sending and receiving events to a "second" Stage
-    let mut second = SystemStage::parallel();
-    second.add_system(sending_system);
-    second.add_system(receiving_system.after(sending_system));
-
-    // Run the "second" Stage after the "first" Stage, so our Events always get updated before we use them
-    schedule.add_stage_after("first", "second", second);
+    // Add systems sending and receiving events
+    schedule.add_system(sending_system);
+    schedule.add_system(receiving_system.after(sending_system));
 
     // Simulate 10 frames of our world
     for iteration in 1..=10 {

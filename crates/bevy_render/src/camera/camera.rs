@@ -6,10 +6,11 @@ use crate::{
     render_asset::RenderAssets,
     render_resource::TextureView,
     view::{ExtractedView, ExtractedWindows, VisibleEntities},
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
-use bevy_app::{App, CoreStage, Plugin, StartupStage};
+use bevy_app::{App, AppSet, Plugin};
 use bevy_asset::{AssetEvent, Assets, Handle};
+use bevy_core::CoreSet;
 use bevy_ecs::{
     change_detection::DetectChanges,
     component::Component,
@@ -18,6 +19,7 @@ use bevy_ecs::{
     prelude::With,
     query::Added,
     reflect::ReflectComponent,
+    schedule::IntoScheduledSystem,
     system::{Commands, ParamSet, Query, Res, ResMut},
 };
 use bevy_math::{Mat4, UVec2, Vec2, Vec3};
@@ -222,10 +224,10 @@ impl<T: Component + Default> Default for CameraTypePlugin<T> {
 impl<T: Component + Default> Plugin for CameraTypePlugin<T> {
     fn build(&self, app: &mut App) {
         app.init_resource::<ActiveCamera<T>>()
-            .add_startup_system_to_stage(StartupStage::PostStartup, set_active_camera::<T>)
-            .add_system_to_stage(CoreStage::PostUpdate, set_active_camera::<T>);
+            .add_system(set_active_camera::<T>.to(AppSet::PostStartup))
+            .add_system(set_active_camera::<T>.to(CoreSet::PostUpdate));
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.add_system_to_stage(RenderStage::Extract, extract_cameras::<T>);
+            render_app.add_system(extract_cameras::<T>.to(RenderSet::Extract));
         }
     }
 }

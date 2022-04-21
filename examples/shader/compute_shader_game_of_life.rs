@@ -6,7 +6,7 @@ use bevy::{
         render_graph::{self, RenderGraph},
         render_resource::*,
         renderer::{RenderContext, RenderDevice},
-        RenderApp, RenderStage,
+        RenderApp, RenderSet,
     },
     window::WindowDescriptor,
 };
@@ -64,8 +64,8 @@ impl Plugin for GameOfLifeComputePlugin {
         let render_app = app.sub_app_mut(RenderApp);
         render_app
             .init_resource::<GameOfLifePipeline>()
-            .add_system_to_stage(RenderStage::Extract, extract_game_of_life_image)
-            .add_system_to_stage(RenderStage::Queue, queue_bind_group);
+            .add_system(extract_game_of_life_image.to(RenderSet::Extract))
+            .add_system(queue_bind_group.to(RenderSet::Queue));
 
         let mut render_graph = render_app.world.resource_mut::<RenderGraph>();
         render_graph.add_node("game_of_life", GameOfLifeNode::default());

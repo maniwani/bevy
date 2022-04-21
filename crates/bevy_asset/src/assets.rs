@@ -1,10 +1,11 @@
 use crate::{
-    update_asset_storage_system, Asset, AssetLoader, AssetServer, AssetStage, Handle, HandleId,
+    update_asset_storage_system, Asset, AssetLoader, AssetServer, AssetSet, Handle, HandleId,
     RefChange,
 };
 use bevy_app::App;
 use bevy_ecs::{
     event::{EventWriter, Events},
+    schedule::IntoScheduledSystem,
     system::ResMut,
     world::FromWorld,
 };
@@ -296,8 +297,8 @@ impl AddAsset for App {
         };
 
         self.insert_resource(assets)
-            .add_system_to_stage(AssetStage::AssetEvents, Assets::<T>::asset_event_system)
-            .add_system_to_stage(AssetStage::LoadAssets, update_asset_storage_system::<T>)
+            .add_system(Assets::<T>::asset_event_system.to(AssetSet::AssetEvents))
+            .add_system(update_asset_storage_system::<T>.to(AssetSet::LoadAssets))
             .register_type::<Handle<T>>()
             .add_event::<AssetEvent<T>>()
     }

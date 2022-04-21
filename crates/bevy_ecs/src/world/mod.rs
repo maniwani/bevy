@@ -54,7 +54,6 @@ pub use identifier::WorldId;
 /// ```
 /// # let mut world = World::default();
 /// # let mut schedule = Schedule::default();
-/// # schedule.add_stage("update", SystemStage::parallel());
 /// # use bevy_ecs::prelude::*;
 /// #
 /// struct MyResource { value: u32 }
@@ -71,8 +70,8 @@ pub use identifier::WorldId;
 ///     assert_eq!(resource.value, 0);
 /// }
 /// #
-/// # schedule.add_system_to_stage("update", read_resource_system.label("first"));
-/// # schedule.add_system_to_stage("update", write_resource_system.after("first"));
+/// # schedule.add_system(read_resource_system);
+/// # schedule.add_system(write_resource_system.after(read_resource_system));
 /// # schedule.run_once(&mut world);
 /// ```
 pub struct World {

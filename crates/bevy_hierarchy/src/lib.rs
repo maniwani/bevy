@@ -23,6 +23,7 @@ pub mod prelude {
 }
 
 use bevy_app::prelude::*;
+use bevy_core::CoreSet;
 use bevy_ecs::prelude::*;
 
 /// Adds [`Parent`] and [`Children`] components and systems for handling them.
@@ -51,7 +52,7 @@ impl Plugin for HierarchyPlugin {
             .add_system(
                 parent_update_system
                     .named(HierarchySystem::ParentUpdate)
-                    .to(bevy_core::CoreSet::PostUpdate),
+                    .to(CoreSet::PostUpdate),
             );
     }
 }

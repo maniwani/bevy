@@ -10,14 +10,17 @@ fn main() {
     // finished executing. So you need to react to the removal at some stage after the
     // `Component` is removed.
     //
-    // With these constraints in mind we make sure to place the system that removes a `Component` on
-    // the `CoreStage::Update' stage, and the system that reacts on the removal on the
-    // `CoreStage::PostUpdate` stage.
+    // With these constraints in mind we make sure to place the system that removes a `Component` in
+    // the `CoreSet::Update' set, and the system that reacts on the removal on the
+    // `CoreSet::PostUpdate` set.
     App::new()
         .add_plugins(DefaultPlugins)
         .add_startup_system(setup)
-        .add_system_to_stage(CoreStage::Update, remove_component)
-        .add_system_to_stage(CoreStage::PostUpdate, react_on_removal)
+        .add_system(remove_component.to(CoreSet::Update))
+        .add_system(
+            CoreSet::PostUpdate,
+            react_on_removal.to(CoreSet::PostUpdate),
+        )
         .run();
 }
 

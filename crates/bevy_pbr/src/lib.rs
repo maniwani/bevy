@@ -42,7 +42,7 @@ use bevy_render::{
     render_phase::{sort_phase_system, AddRenderCommand, DrawFunctions},
     render_resource::{Shader, SpecializedMeshPipelines},
     view::VisibilitySystems,
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
 use bevy_transform::TransformSystem;
 
@@ -74,37 +74,37 @@ impl Plugin for PbrPlugin {
             .init_resource::<GlobalVisiblePointLights>()
             .init_resource::<DirectionalLightShadowMap>()
             .init_resource::<PointLightShadowMap>()
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
+            .add_system(
                 // NOTE: Clusters need to have been added before update_clusters is run so
                 // add as an exclusive system
                 add_clusters
                     .at_start()
-                    .label(SimulationLightSystems::AddClusters),
+                    .to(CoreSet::PostUpdate)
+                    .to(SimulationLightSystems::AddClusters),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
+            .add_system(
                 assign_lights_to_clusters
-                    .label(SimulationLightSystems::AssignLightsToClusters)
+                    .to(SimulationLightSystems::AssignLightsToClusters)
+                    .to(CoreSet::PostUpdate)
                     .after(TransformSystem::TransformPropagate),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
+            .add_system(
                 update_directional_light_frusta
-                    .label(SimulationLightSystems::UpdateDirectionalLightFrusta)
+                    .to(SimulationLightSystems::UpdateDirectionalLightFrusta)
+                    .to(CoreSet::PostUpdate)
                     .after(TransformSystem::TransformPropagate),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
+            .add_system(
                 update_point_light_frusta
-                    .label(SimulationLightSystems::UpdatePointLightFrusta)
+                    .to(SimulationLightSystems::UpdatePointLightFrusta)
+                    .to(CoreSet::PostUpdate)
                     .after(TransformSystem::TransformPropagate)
                     .after(SimulationLightSystems::AssignLightsToClusters),
             )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
+            .add_system(
                 check_light_mesh_visibility
-                    .label(SimulationLightSystems::CheckLightVisibility)
+                    .to(SimulationLightSystems::CheckLightVisibility)
+                    .to(CoreSet::PostUpdate)
                     .after(TransformSystem::TransformPropagate)
                     .after(VisibilitySystems::CalculateBounds)
                     .after(SimulationLightSystems::UpdateDirectionalLightFrusta)
@@ -132,37 +132,40 @@ impl Plugin for PbrPlugin {
         };
 
         render_app
-            .add_system_to_stage(
-                RenderStage::Extract,
-                render::extract_clusters.label(RenderLightSystems::ExtractClusters),
+            .add_system(
+                render::extract_clusters
+                    .to(RenderLightSystems::ExtractClusters)
+                    .to(RenderSet::Extract),
             )
-            .add_system_to_stage(
-                RenderStage::Extract,
-                render::extract_lights.label(RenderLightSystems::ExtractLights),
+            .add_system(
+                render::extract_lights
+                    .to(RenderLightSystems::ExtractLights)
+                    .to(RenderSet::Extract),
             )
-            .add_system_to_stage(
-                RenderStage::Prepare,
+            .add_system(
                 // this is added as an exclusive system because it contributes new views. it must run (and have Commands applied)
                 // _before_ the `prepare_views()` system is run. ideally this becomes a normal system when "stageless" features come out
                 render::prepare_lights
                     .at_start()
-                    .label(RenderLightSystems::PrepareLights),
+                    .to(RenderLightSystems::PrepareLights)
+                    .to(RenderSet::Prepare),
             )
-            .add_system_to_stage(
-                RenderStage::Prepare,
+            .add_system(
                 // this is added as an exclusive system because it contributes new views. it must run (and have Commands applied)
                 // _before_ the `prepare_views()` system is run. ideally this becomes a normal system when "stageless" features come out
                 render::prepare_clusters
                     .at_start()
-                    .label(RenderLightSystems::PrepareClusters)
-                    .after(RenderLightSystems::PrepareLights),
+                    .to(RenderLightSystems::PrepareClusters)
+                    .after(RenderLightSystems::PrepareLights)
+                    .to(RenderSet::Prepare),
             )
-            .add_system_to_stage(
-                RenderStage::Queue,
-                render::queue_shadows.label(RenderLightSystems::QueueShadows),
+            .add_system(
+                render::queue_shadows
+                    .to(RenderLightSystems::QueueShadows)
+                    .to(RenderSet::Queue),
             )
-            .add_system_to_stage(RenderStage::Queue, render::queue_shadow_view_bind_group)
-            .add_system_to_stage(RenderStage::PhaseSort, sort_phase_system::<Shadow>)
+            .add_system(render::queue_shadow_view_bind_group.to(RenderSet::Queue))
+            .add_system(sort_phase_system::<Shadow>.to(RenderSet::PhaseSort))
             .init_resource::<ShadowPipeline>()
             .init_resource::<DrawFunctions<Shadow>>()
             .init_resource::<LightMeta>()

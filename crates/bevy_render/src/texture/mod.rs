@@ -26,10 +26,11 @@ pub use texture_cache::*;
 
 use crate::{
     render_asset::{PrepareAssetLabel, RenderAssetPlugin},
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
 use bevy_app::{App, Plugin};
 use bevy_asset::{AddAsset, Assets};
+use bevy_ecs::schedule::IntoScheduledSystem;
 
 // TODO: replace Texture names with Image names?
 /// Adds the [`Image`] as an asset and makes sure that they are extracted and prepared for the GPU.
@@ -66,7 +67,7 @@ impl Plugin for ImagePlugin {
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<TextureCache>()
-                .add_system_to_stage(RenderStage::Cleanup, update_texture_cache_system);
+                .add_system(update_texture_cache_system.to(RenderSet::Cleanup));
         }
     }
 }

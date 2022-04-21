@@ -12,7 +12,7 @@ use bevy::{
         },
         renderer::RenderContext,
         view::RenderLayers,
-        RenderApp, RenderStage,
+        RenderApp, RenderSet,
     },
 };
 
@@ -34,7 +34,7 @@ fn main() {
     let render_app = app.sub_app_mut(RenderApp);
     let driver = FirstPassCameraDriver::new(&mut render_app.world);
     // This will add 3D render phases for the new camera.
-    render_app.add_system_to_stage(RenderStage::Extract, extract_first_pass_camera_phases);
+    render_app.add_system(extract_first_pass_camera_phases.to(RenderSet::Extract));
 
     let mut graph = render_app.world.resource_mut::<RenderGraph>();
 

@@ -16,7 +16,7 @@ use bevy::{
         render_resource::*,
         renderer::{RenderDevice, RenderQueue},
         view::{ComputedVisibility, ExtractedView, Msaa, Visibility},
-        RenderApp, RenderStage,
+        RenderApp, RenderSet,
     },
 };
 
@@ -69,11 +69,11 @@ impl Plugin for CustomMaterialPlugin {
             })
             .init_resource::<CustomPipeline>()
             .init_resource::<SpecializedMeshPipelines<CustomPipeline>>()
-            .add_system_to_stage(RenderStage::Extract, extract_time)
-            .add_system_to_stage(RenderStage::Extract, extract_custom_material)
-            .add_system_to_stage(RenderStage::Prepare, prepare_time)
-            .add_system_to_stage(RenderStage::Queue, queue_custom)
-            .add_system_to_stage(RenderStage::Queue, queue_time_bind_group);
+            .add_system(extract_time.to(RenderSet::Extract))
+            .add_system(extract_custom_material.to(RenderSet::Extract))
+            .add_system(prepare_time.to(RenderSet::Prepare))
+            .add_system(queue_custom.to(RenderSet::Queue))
+            .add_system(queue_time_bind_group.to(RenderSet::Queue));
     }
 }
 

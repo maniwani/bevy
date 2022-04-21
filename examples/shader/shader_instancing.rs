@@ -15,7 +15,7 @@ use bevy::{
         render_resource::*,
         renderer::RenderDevice,
         view::{ComputedVisibility, ExtractedView, Msaa, NoFrustumCulling, Visibility},
-        RenderApp, RenderStage,
+        RenderApp, RenderSet,
     },
 };
 use bytemuck::{Pod, Zeroable};
@@ -82,8 +82,8 @@ impl Plugin for CustomMaterialPlugin {
             .add_render_command::<Transparent3d, DrawCustom>()
             .init_resource::<CustomPipeline>()
             .init_resource::<SpecializedMeshPipelines<CustomPipeline>>()
-            .add_system_to_stage(RenderStage::Queue, queue_custom)
-            .add_system_to_stage(RenderStage::Prepare, prepare_instance_buffers);
+            .add_system(queue_custom.to(RenderSet::Queue))
+            .add_system(prepare_instance_buffers.to(RenderSet::Prepare));
     }
 }
 

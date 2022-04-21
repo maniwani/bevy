@@ -29,6 +29,7 @@ pub use loader::*;
 pub use path::*;
 
 use bevy_app::{prelude::Plugin, App};
+use bevy_core::CoreSet;
 use bevy_ecs::schedule::{IntoScheduledSet, IntoScheduledSystem, SystemLabel};
 use bevy_tasks::IoTaskPool;
 
@@ -92,15 +93,9 @@ impl Plugin for AssetPlugin {
 
         app.register_type::<HandleId>();
 
-        app.add_system(asset_server::free_unused_assets_system.to(bevy_core::CoreSet::PreUpdate))
-            .add_set(
-                AssetSet::LoadAssets
-                    .between(bevy_core::CoreSet::First, bevy_core::CoreSet::PreUpdate),
-            )
-            .add_set(
-                AssetSet::AssetEvents
-                    .between(bevy_core::CoreSet::PostUpdate, bevy_core::CoreSet::Last),
-            );
+        app.add_system(asset_server::free_unused_assets_system.to(CoreSet::PreUpdate))
+            .add_set(AssetSet::LoadAssets.between(CoreSet::First, CoreSet::PreUpdate))
+            .add_set(AssetSet::AssetEvents.between(CoreSet::PostUpdate, CoreSet::Last));
 
         #[cfg(all(
             feature = "filesystem_watcher",

@@ -31,10 +31,10 @@ pub trait Draw<P: PhaseItem>: Send + Sync + 'static {
 }
 
 /// An item which will be drawn to the screen. A phase item should be queued up for rendering
-/// during the [`RenderStage::Queue`](crate::RenderStage::Queue) stage.
+/// during the [`RenderSet::Queue`](crate::RenderSet::Queue) stage.
 /// Afterwards it will be sorted and rendered automatically  in the
-/// [`RenderStage::PhaseSort`](crate::RenderStage::PhaseSort) stage and
-/// [`RenderStage::Render`](crate::RenderStage::Render) stage, respectively.
+/// [`RenderSet::PhaseSort`](crate::RenderSet::PhaseSort) stage and
+/// [`RenderSet::Render`](crate::RenderSet::Render) stage, respectively.
 pub trait PhaseItem: Send + Sync + 'static {
     /// The type used for ordering the items. The smallest values are drawn first.
     type SortKey: Ord;

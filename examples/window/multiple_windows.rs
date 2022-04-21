@@ -6,7 +6,7 @@ use bevy::{
         render_graph::{self, NodeRunError, RenderGraph, RenderGraphContext, SlotValue},
         render_phase::RenderPhase,
         renderer::RenderContext,
-        RenderApp, RenderStage,
+        RenderApp, RenderSet,
     },
     window::{CreateWindow, PresentMode, WindowId},
 };
@@ -30,7 +30,7 @@ impl Plugin for SecondWindowCameraPlugin {
         let render_app = app.sub_app_mut(RenderApp);
 
         // add `RenderPhase<Opaque3d>`, `RenderPhase<AlphaMask3d>` and `RenderPhase<Transparent3d>` camera phases
-        render_app.add_system_to_stage(RenderStage::Extract, extract_second_camera_phases);
+        render_app.add_system(extract_second_camera_phases.to(RenderSet::Extract));
 
         // add a render graph node that executes the 3d subgraph
         let mut render_graph = render_app.world.resource_mut::<RenderGraph>();

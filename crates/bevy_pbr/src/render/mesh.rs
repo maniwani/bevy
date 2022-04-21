@@ -22,7 +22,7 @@ use bevy_render::{
     renderer::{RenderDevice, RenderQueue},
     texture::{BevyDefault, GpuImage, Image, TextureFormatPixelInfo},
     view::{ComputedVisibility, ViewUniform, ViewUniformOffset, ViewUniforms},
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
 use bevy_transform::components::GlobalTransform;
 use smallvec::SmallVec;
@@ -67,11 +67,11 @@ impl Plugin for MeshRenderPlugin {
             render_app
                 .init_resource::<MeshPipeline>()
                 .init_resource::<SkinnedMeshUniform>()
-                .add_system_to_stage(RenderStage::Extract, extract_meshes)
-                .add_system_to_stage(RenderStage::Extract, extract_skinned_meshes)
-                .add_system_to_stage(RenderStage::Prepare, prepare_skinned_meshes)
-                .add_system_to_stage(RenderStage::Queue, queue_mesh_bind_group)
-                .add_system_to_stage(RenderStage::Queue, queue_mesh_view_bind_groups);
+                .add_system(extract_meshes.to(RenderSet::Extract))
+                .add_system(extract_skinned_meshes.to(RenderSet::Extract))
+                .add_system(prepare_skinned_meshes.to(RenderSet::Prepare))
+                .add_system(queue_mesh_bind_group.to(RenderSet::Queue))
+                .add_system(queue_mesh_view_bind_groups.to(RenderSet::Queue));
         }
     }
 }

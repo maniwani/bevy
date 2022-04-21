@@ -52,9 +52,9 @@ use std::ops::{Deref, DerefMut};
 #[derive(Default)]
 pub struct RenderPlugin;
 
-/// The labels of the default App rendering stages.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, StageLabel)]
-pub enum RenderStage {
+/// The labels of the default App rendering system sets.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, SystemLabel)]
+pub enum RenderSet {
     /// Extract data from the "app world" and insert it into the "render world".
     /// This step should be kept as short as possible to increase the "pipelining potential" for
     /// running the next frame while rendering the current frame.
@@ -64,8 +64,8 @@ pub enum RenderStage {
     Prepare,
 
     /// Create [`BindGroups`](crate::render_resource::BindGroup) that depend on
-    /// [`Prepare`](RenderStage::Prepare) data and queue up draw calls to run during the
-    /// [`Render`](RenderStage::Render) stage.
+    /// [`Prepare`](RenderSet::Prepare) data and queue up draw calls to run during the
+    /// [`Render`](RenderSet::Render) stage.
     Queue,
 
     // TODO: This could probably be moved in favor of a system ordering abstraction in Render or Queue
@@ -108,7 +108,7 @@ pub struct RenderApp;
 struct ScratchRenderWorld(World);
 
 impl Plugin for RenderPlugin {
-    /// Initializes the renderer, sets up the [`RenderStage`](RenderStage) and creates the rendering sub-app.
+    /// Initializes the renderer, sets up the [`RenderSet`](RenderSet) and creates the rendering sub-app.
     fn build(&self, app: &mut App) {
         let options = app
             .world
@@ -159,17 +159,17 @@ impl Plugin for RenderPlugin {
             // extract stage runs on the app world, but the buffers are applied to the render world
             extract_stage.set_apply_buffers(false);
             render_app
-                .add_stage(RenderStage::Extract, extract_stage)
-                .add_stage(RenderStage::Prepare, SystemStage::parallel())
-                .add_stage(RenderStage::Queue, SystemStage::parallel())
-                .add_stage(RenderStage::PhaseSort, SystemStage::parallel())
+                .add_stage(RenderSet::Extract, extract_stage)
+                .add_stage(RenderSet::Prepare, SystemStage::parallel())
+                .add_stage(RenderSet::Queue, SystemStage::parallel())
+                .add_stage(RenderSet::PhaseSort, SystemStage::parallel())
                 .add_stage(
-                    RenderStage::Render,
+                    RenderSet::Render,
                     SystemStage::parallel()
                         .with_system(PipelineCache::process_pipeline_queue_system)
                         .with_system(render_system.at_end()),
                 )
-                .add_stage(RenderStage::Cleanup, SystemStage::parallel())
+                .add_stage(RenderSet::Cleanup, SystemStage::parallel())
                 .insert_resource(instance)
                 .insert_resource(device)
                 .insert_resource(queue)
@@ -218,7 +218,7 @@ impl Plugin for RenderPlugin {
                     // prepare
                     let prepare = render_app
                         .schedule
-                        .get_stage_mut::<SystemStage>(&RenderStage::Prepare)
+                        .get_stage_mut::<SystemStage>(&RenderSet::Prepare)
                         .unwrap();
                     prepare.run(&mut render_app.world);
                 }
@@ -231,7 +231,7 @@ impl Plugin for RenderPlugin {
                     // queue
                     let queue = render_app
                         .schedule
-                        .get_stage_mut::<SystemStage>(&RenderStage::Queue)
+                        .get_stage_mut::<SystemStage>(&RenderSet::Queue)
                         .unwrap();
                     queue.run(&mut render_app.world);
                 }
@@ -244,7 +244,7 @@ impl Plugin for RenderPlugin {
                     // phase sort
                     let phase_sort = render_app
                         .schedule
-                        .get_stage_mut::<SystemStage>(&RenderStage::PhaseSort)
+                        .get_stage_mut::<SystemStage>(&RenderSet::PhaseSort)
                         .unwrap();
                     phase_sort.run(&mut render_app.world);
                 }
@@ -257,7 +257,7 @@ impl Plugin for RenderPlugin {
                     // render
                     let render = render_app
                         .schedule
-                        .get_stage_mut::<SystemStage>(&RenderStage::Render)
+                        .get_stage_mut::<SystemStage>(&RenderSet::Render)
                         .unwrap();
                     render.run(&mut render_app.world);
                 }
@@ -270,7 +270,7 @@ impl Plugin for RenderPlugin {
                     // cleanup
                     let cleanup = render_app
                         .schedule
-                        .get_stage_mut::<SystemStage>(&RenderStage::Cleanup)
+                        .get_stage_mut::<SystemStage>(&RenderSet::Cleanup)
                         .unwrap();
                     cleanup.run(&mut render_app.world);
 
@@ -289,12 +289,12 @@ impl Plugin for RenderPlugin {
     }
 }
 
-/// Executes the [`Extract`](RenderStage::Extract) stage of the renderer.
+/// Executes the [`Extract`](RenderSet::Extract) stage of the renderer.
 /// This updates the render world with the extracted ECS data of the current frame.
 fn extract(app_world: &mut World, render_app: &mut App) {
     let extract = render_app
         .schedule
-        .get_stage_mut::<SystemStage>(&RenderStage::Extract)
+        .get_stage_mut::<SystemStage>(&RenderSet::Extract)
         .unwrap();
 
     // temporarily add the render world to the app world as a resource

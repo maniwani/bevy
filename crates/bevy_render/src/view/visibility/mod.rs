@@ -3,8 +3,9 @@ mod render_layers;
 use bevy_math::Vec3A;
 pub use render_layers::*;
 
-use bevy_app::{CoreStage, Plugin};
+use bevy_app::Plugin;
 use bevy_asset::{Assets, Handle};
+use bevy_core::CoreSet;
 use bevy_ecs::prelude::*;
 use bevy_reflect::Reflect;
 use bevy_transform::components::GlobalTransform;
@@ -81,31 +82,28 @@ impl Plugin for VisibilityPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         use VisibilitySystems::*;
 
-        app.add_system_to_stage(
-            CoreStage::PostUpdate,
-            calculate_bounds.label(CalculateBounds),
-        )
-        .add_system_to_stage(
-            CoreStage::PostUpdate,
-            update_frusta::<OrthographicProjection>
-                .label(UpdateOrthographicFrusta)
-                .after(TransformSystem::TransformPropagate),
-        )
-        .add_system_to_stage(
-            CoreStage::PostUpdate,
-            update_frusta::<PerspectiveProjection>
-                .label(UpdatePerspectiveFrusta)
-                .after(TransformSystem::TransformPropagate),
-        )
-        .add_system_to_stage(
-            CoreStage::PostUpdate,
-            check_visibility
-                .label(CheckVisibility)
-                .after(CalculateBounds)
-                .after(UpdateOrthographicFrusta)
-                .after(UpdatePerspectiveFrusta)
-                .after(TransformSystem::TransformPropagate),
-        );
+        app.add_system(calculate_bounds.to(CalculateBounds).to(CoreSet::PostUpdate))
+            .add_system(
+                update_frusta::<OrthographicProjection>
+                    .to(UpdateOrthographicFrusta)
+                    .to(CoreSet::PostUpdate)
+                    .after(TransformSystem::TransformPropagate),
+            )
+            .add_system(
+                update_frusta::<PerspectiveProjection>
+                    .to(UpdatePerspectiveFrusta)
+                    .to(CoreSet::PostUpdate)
+                    .after(TransformSystem::TransformPropagate),
+            )
+            .add_system(
+                check_visibility
+                    .to(CheckVisibility)
+                    .to(CoreSet::PostUpdate)
+                    .after(CalculateBounds)
+                    .after(UpdateOrthographicFrusta)
+                    .after(UpdatePerspectiveFrusta)
+                    .after(TransformSystem::TransformPropagate),
+            );
     }
 }
 

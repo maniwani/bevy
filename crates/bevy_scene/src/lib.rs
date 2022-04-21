@@ -20,6 +20,7 @@ pub mod prelude {
 
 use bevy_app::prelude::*;
 use bevy_asset::AddAsset;
+use bevy_core::CoreSet;
 use bevy_ecs::schedule::IntoScheduledSystem;
 
 #[derive(Default)]
@@ -31,6 +32,6 @@ impl Plugin for ScenePlugin {
             .add_asset::<Scene>()
             .init_asset_loader::<SceneLoader>()
             .init_resource::<SceneSpawner>()
-            .add_system_to_stage(CoreStage::PreUpdate, scene_spawner_system.at_end());
+            .add_system(scene_spawner_system.to(CoreSet::PreUpdate).at_end());
     }
 }

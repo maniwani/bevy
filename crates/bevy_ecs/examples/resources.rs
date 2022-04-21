@@ -11,14 +11,12 @@ fn main() {
     // Add the counter resource
     world.insert_resource(Counter { value: 0 });
 
-    // Create a schedule and a stage
+    // Create a schedule
     let mut schedule = Schedule::default();
-    let mut update = SystemStage::parallel();
 
     // Add systems to increase the counter and to print out the current value
-    update.add_system(increase_counter);
-    update.add_system(print_counter.after(increase_counter));
-    schedule.add_stage("update", update);
+    schedule.add_system(increase_counter);
+    schedule.add_system(print_counter.after(increase_counter));
 
     for iteration in 1..=10 {
         println!("Simulating frame {}/10", iteration);

@@ -26,7 +26,7 @@ use bevy_render::{
     },
     renderer::RenderDevice,
     view::{ComputedVisibility, Msaa, Visibility, VisibleEntities},
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
 use bevy_transform::components::{GlobalTransform, Transform};
 use std::hash::Hash;
@@ -194,7 +194,7 @@ impl<M: SpecializedMaterial2d> Plugin for Material2dPlugin<M> {
                 .add_render_command::<Transparent2d, DrawMaterial2d<M>>()
                 .init_resource::<Material2dPipeline<M>>()
                 .init_resource::<SpecializedMeshPipelines<Material2dPipeline<M>>>()
-                .add_system_to_stage(RenderStage::Queue, queue_material2d_meshes::<M>);
+                .add_system(queue_material2d_meshes::<M>.to(RenderSet::Queue));
         }
     }
 }

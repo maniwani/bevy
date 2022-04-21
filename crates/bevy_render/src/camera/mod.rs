@@ -12,6 +12,8 @@ use crate::{
     view::{ComputedVisibility, Visibility, VisibleEntities},
 };
 use bevy_app::{App, Plugin};
+use bevy_core::CoreSet;
+use bevy_ecs::schedule::IntoScheduledSystem;
 
 #[derive(Default)]
 pub struct CameraPlugin;

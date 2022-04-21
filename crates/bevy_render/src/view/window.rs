@@ -2,7 +2,7 @@ use crate::{
     render_resource::TextureView,
     renderer::{RenderDevice, RenderInstance},
     texture::BevyDefault,
-    RenderApp, RenderStage, RenderWorld,
+    RenderApp, RenderSet, RenderWorld,
 };
 use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
@@ -29,10 +29,11 @@ impl Plugin for WindowRenderPlugin {
                 .init_resource::<ExtractedWindows>()
                 .init_resource::<WindowSurfaces>()
                 .init_resource::<NonSendMarker>()
-                .add_system_to_stage(RenderStage::Extract, extract_windows)
-                .add_system_to_stage(
-                    RenderStage::Prepare,
-                    prepare_windows.label(WindowSystem::Prepare),
+                .add_system(extract_windows.to(RenderSet::Extract))
+                .add_system(
+                    prepare_windows
+                        .to(WindowSystem::Prepare)
+                        .to(RenderSet::Prepare),
                 );
         }
     }

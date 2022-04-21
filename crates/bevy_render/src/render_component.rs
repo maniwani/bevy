@@ -1,7 +1,7 @@
 use crate::{
     render_resource::{std140::AsStd140, DynamicUniformVec},
     renderer::{RenderDevice, RenderQueue},
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
 use bevy_app::{App, Plugin};
 use bevy_asset::{Asset, Handle};
@@ -30,7 +30,7 @@ impl<C: Component> DynamicUniformIndex<C> {
 /// Describes how a component gets extracted for rendering.
 ///
 /// Therefore the component is transferred from the "app world" into the "render world"
-/// in the [`RenderStage::Extract`](crate::RenderStage::Extract) step.
+/// in the [`RenderSet::Extract`](crate::RenderSet::Extract) step.
 pub trait ExtractComponent: Component {
     /// ECS [`WorldQuery`] to fetch the components to extract.
     type Query: WorldQuery;
@@ -47,7 +47,7 @@ pub trait ExtractComponent: Component {
 /// For referencing the newly created uniforms a [`DynamicUniformIndex`] is inserted
 /// for every processed entity.
 ///
-/// Therefore it sets up the [`RenderStage::Prepare`](crate::RenderStage::Prepare) step
+/// Therefore it sets up the [`RenderSet::Prepare`](crate::RenderSet::Prepare) step
 /// for the specified [`ExtractComponent`].
 pub struct UniformComponentPlugin<C>(PhantomData<fn() -> C>);
 
@@ -62,7 +62,7 @@ impl<C: Component + AsStd140 + Clone> Plugin for UniformComponentPlugin<C> {
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .insert_resource(ComponentUniforms::<C>::default())
-                .add_system_to_stage(RenderStage::Prepare, prepare_uniform_components::<C>);
+                .add_system(prepare_uniform_components::<C>.to(RenderSet::Prepare));
         }
     }
 }
@@ -129,7 +129,7 @@ fn prepare_uniform_components<C: Component>(
 
 /// This plugin extracts the components into the "render world".
 ///
-/// Therefore it sets up the [`RenderStage::Extract`](crate::RenderStage::Extract) step
+/// Therefore it sets up the [`RenderSet::Extract`](crate::RenderSet::Extract) step
 /// for the specified [`ExtractComponent`].
 pub struct ExtractComponentPlugin<C, F = ()>(PhantomData<fn() -> (C, F)>);
 
@@ -145,7 +145,7 @@ where
 {
     fn build(&self, app: &mut App) {
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
-            render_app.add_system_to_stage(RenderStage::Extract, extract_components::<C>);
+            render_app.add_system(extract_components::<C>.to(RenderSet::Extract));
         }
     }
 }

@@ -15,7 +15,7 @@ use bevy_render::{
     renderer::{RenderDevice, RenderQueue},
     texture::{BevyDefault, GpuImage, Image, TextureFormatPixelInfo},
     view::{ComputedVisibility, ExtractedView, ViewUniform, ViewUniformOffset, ViewUniforms},
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
 use bevy_transform::components::GlobalTransform;
 
@@ -64,9 +64,9 @@ impl Plugin for Mesh2dRenderPlugin {
             render_app
                 .init_resource::<Mesh2dPipeline>()
                 .init_resource::<SpecializedMeshPipelines<Mesh2dPipeline>>()
-                .add_system_to_stage(RenderStage::Extract, extract_mesh2d)
-                .add_system_to_stage(RenderStage::Queue, queue_mesh2d_bind_group)
-                .add_system_to_stage(RenderStage::Queue, queue_mesh2d_view_bind_groups);
+                .add_system(extract_mesh2d.to(RenderSet::Extract))
+                .add_system(queue_mesh2d_bind_group.to(RenderSet::Queue))
+                .add_system(queue_mesh2d_view_bind_groups);
         }
     }
 }

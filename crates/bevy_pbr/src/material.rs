@@ -28,7 +28,7 @@ use bevy_render::{
     },
     renderer::RenderDevice,
     view::{ExtractedView, Msaa, VisibleEntities},
-    RenderApp, RenderStage,
+    RenderApp, RenderSet,
 };
 use bevy_utils::tracing::error;
 use std::hash::Hash;
@@ -210,7 +210,7 @@ impl<M: SpecializedMaterial> Plugin for MaterialPlugin<M> {
                 .add_render_command::<AlphaMask3d, DrawMaterial<M>>()
                 .init_resource::<MaterialPipeline<M>>()
                 .init_resource::<SpecializedMeshPipelines<MaterialPipeline<M>>>()
-                .add_system_to_stage(RenderStage::Queue, queue_material_meshes::<M>);
+                .add_system(queue_material_meshes::<M>.to(RenderSet::Queue));
         }
     }
 }

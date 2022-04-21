@@ -34,7 +34,7 @@ use bevy_render::{
     renderer::RenderDevice,
     texture::TextureCache,
     view::{ExtractedView, Msaa, ViewDepthTexture},
-    RenderApp, RenderStage, RenderWorld,
+    RenderApp, RenderSet, RenderWorld,
 };
 
 /// When used as a resource, sets the color that is used to clear the screen between frames.
@@ -125,22 +125,22 @@ impl Plugin for CorePipelinePlugin {
             .init_resource::<DrawFunctions<Opaque3d>>()
             .init_resource::<DrawFunctions<AlphaMask3d>>()
             .init_resource::<DrawFunctions<Transparent3d>>()
-            .add_system_to_stage(RenderStage::Extract, extract_clear_color)
-            .add_system_to_stage(RenderStage::Extract, extract_core_pipeline_camera_phases)
-            .add_system_to_stage(RenderStage::Prepare, prepare_core_views_system)
-            .add_system_to_stage(
-                RenderStage::PhaseSort,
+            .add_system(extract_clear_color.to(RenderSet::Extract))
+            .add_system(extract_core_pipeline_camera_phases.to(RenderSet::Extract))
+            .add_system(prepare_core_views_system.to(RenderSet::Prepare))
+            .add_system(
                 sort_phase_system::<Transparent2d>
-                    .label(CorePipelineRenderSystems::SortTransparent2d),
+                    .to(RenderSet::PhaseSort)
+                    .to(CorePipelineRenderSystems::SortTransparent2d),
             )
-            .add_system_to_stage(
-                RenderStage::PhaseSort,
+            .add_system(
                 batch_phase_system::<Transparent2d>
+                    .to(RenderSet::PhaseSort)
                     .after(CorePipelineRenderSystems::SortTransparent2d),
             )
-            .add_system_to_stage(RenderStage::PhaseSort, sort_phase_system::<Opaque3d>)
-            .add_system_to_stage(RenderStage::PhaseSort, sort_phase_system::<AlphaMask3d>)
-            .add_system_to_stage(RenderStage::PhaseSort, sort_phase_system::<Transparent3d>);
+            .add_system(sort_phase_system::<Opaque3d>.to(RenderSet::PhaseSort))
+            .add_system(sort_phase_system::<AlphaMask3d>.to(RenderSet::PhaseSort))
+            .add_system(sort_phase_system::<Transparent3d>.to(RenderSet::PhaseSort));
 
         let clear_pass_node = ClearPassNode::new(&mut render_app.world);
         let pass_node_2d = MainPass2dNode::new(&mut render_app.world);

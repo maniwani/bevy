@@ -15,7 +15,7 @@ use bevy::{
             SpecializedMeshPipelineError, SpecializedMeshPipelines,
         },
         view::ExtractedView,
-        RenderApp, RenderStage,
+        RenderApp, RenderSet,
     },
 };
 
@@ -28,7 +28,7 @@ impl Plugin for IsRedPlugin {
             .add_render_command::<Transparent3d, DrawIsRed>()
             .init_resource::<IsRedPipeline>()
             .init_resource::<SpecializedMeshPipelines<IsRedPipeline>>()
-            .add_system_to_stage(RenderStage::Queue, queue_custom);
+            .add_system(queue_custom.to(RenderSet::Queue));
     }
 }
 

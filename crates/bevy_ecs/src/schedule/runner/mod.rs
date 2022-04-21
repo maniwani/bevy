@@ -52,7 +52,7 @@ pub fn apply_buffers(world: &mut World) {
 }
 
 /// Temporary container and schematic for running a collection of systems.
-pub(super) struct Schedule {
+pub(crate) struct Schedule {
     /// List of systems, topsorted according to system dependency graph.
     pub(super) systems: Vec<RefCell<BoxedSystem>>,
     /// List of systems' conditions, topsorted according to system dependency graph.
