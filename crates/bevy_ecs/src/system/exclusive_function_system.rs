@@ -12,7 +12,7 @@ use crate::{
     world::{World, WorldId},
 };
 use bevy_ecs_macros::all_tuples;
-use std::{borrow::Cow, marker::PhantomData};
+use std::{any::TypeId, borrow::Cow, marker::PhantomData};
 
 /// A function system that runs with exclusive [`World`] access.
 ///
@@ -66,6 +66,11 @@ where
     #[inline]
     fn name(&self) -> Cow<'static, str> {
         self.system_meta.name.clone()
+    }
+
+    #[inline]
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<F>()
     }
 
     #[inline]
