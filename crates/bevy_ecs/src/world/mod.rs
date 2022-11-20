@@ -1428,7 +1428,7 @@ impl World {
             self.storages.resources.check_change_ticks(change_tick);
 
             if let Some(mut schedules) = self.get_resource_mut::<crate::schedule_v3::Schedules>() {
-                schedules.check_change_ticks(change_tick, last_check_tick);
+                schedules.check_change_ticks(change_tick);
             }
 
             self.last_check_tick = change_tick;
