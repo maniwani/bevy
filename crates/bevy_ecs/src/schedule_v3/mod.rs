@@ -447,25 +447,377 @@ mod tests {
                 Err(ScheduleBuildError::CrossDependency(_, _))
             ));
         }
+    }
+
+    mod system_ambiguity_errors {
+        use crate::{
+            event::{EventReader, EventWriter, Events},
+            prelude::{Component, With, Without},
+            system::{NonSend, NonSendMut, Query},
+        };
+
+        use super::*;
+
+        #[derive(Resource)]
+        struct R;
+
+        #[derive(Component)]
+        struct A;
+
+        #[derive(Component)]
+        struct B;
+
+        // An event type
+        struct E;
+
+        fn empty_system() {}
+        fn res_system(_res: Res<R>) {}
+        fn resmut_system(_res: ResMut<R>) {}
+        fn nonsend_system(_ns: NonSend<R>) {}
+        fn nonsendmut_system(_ns: NonSendMut<R>) {}
+        fn read_component_system(_query: Query<&A>) {}
+        fn write_component_system(_query: Query<&mut A>) {}
+        fn with_filtered_component_system(_query: Query<&mut A, With<B>>) {}
+        fn without_filtered_component_system(_query: Query<&mut A, Without<B>>) {}
+        fn event_reader_system(_reader: EventReader<E>) {}
+        fn event_writer_system(_writer: EventWriter<E>) {}
+        fn event_resource_system(_events: ResMut<Events<E>>) {}
+        fn read_world_system(_world: &World) {}
+        fn write_world_system(_world: &mut World) {}
 
         #[test]
-        fn ambiguity() {
-            #[derive(Resource)]
-            struct X;
-
-            fn res_ref(_x: Res<X>) {}
-            fn res_mut(_x: ResMut<X>) {}
-
+        fn one_of_everything() {
             let mut world = World::new();
+            world.insert_resource(R);
+            world.spawn(A);
+            world.init_resource::<Events<E>>();
+
             let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((resmut_system, write_component_system, event_writer_system));
+
+            let result = schedule.initialize(&mut world);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn read_only() {
+            let mut world = World::new();
+            world.insert_resource(R);
+            world.spawn(A);
+            world.init_resource::<Events<E>>();
+
+            let mut schedule = Schedule::new();
+            schedule.add_systems((
+                empty_system,
+                empty_system,
+                res_system,
+                res_system,
+                nonsend_system,
+                nonsend_system,
+                read_component_system,
+                read_component_system,
+                event_reader_system,
+                event_reader_system,
+                read_world_system,
+                read_world_system,
+            ));
 
             schedule.set_build_settings(
                 ScheduleBuildSettings::new().with_ambiguity_detection(LogLevel::Error),
             );
 
-            schedule.add_systems((res_ref, res_mut));
+            schedule.add_systems((res_system, resmut_system));
             let result = schedule.initialize(&mut world);
             assert!(matches!(result, Err(ScheduleBuildError::Ambiguity)));
         }
+
+        #[test]
+        fn read_world() {
+            let mut world = World::new();
+            world.insert_resource(R);
+            world.spawn(A);
+            world.init_resource::<Events<E>>();
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((
+                resmut_system,
+                write_component_system,
+                event_writer_system,
+                read_world_system,
+            ));
+
+            let result = schedule.initialize(&mut world);
+            // ambiguity_count == 3
+            assert!(matches!(result, Err(ScheduleBuildError::Ambiguity)));
+        }
+
+        #[test]
+        fn resources() {
+            let mut world = World::new();
+            world.insert_resource(R);
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((resmut_system, res_system));
+
+            let result = schedule.initialize(&mut world);
+            // ambiguity_count == 1
+            assert!(matches!(result, Err(ScheduleBuildError::Ambiguity)));
+        }
+
+        #[test]
+        fn nonsend() {
+            let mut world = World::new();
+            world.insert_resource(R);
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((nonsendmut_system, nonsend_system));
+
+            let result = schedule.initialize(&mut world);
+            // ambiguity_count == 1
+            assert!(matches!(result, Err(ScheduleBuildError::Ambiguity)));
+        }
+
+        #[test]
+        fn components() {
+            let mut world = World::new();
+            world.insert_resource(R);
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((read_component_system, write_component_system));
+
+            let result = schedule.initialize(&mut world);
+            // ambiguity_count == 1
+            assert!(matches!(result, Err(ScheduleBuildError::Ambiguity)));
+        }
+
+        #[test]
+        #[ignore = "Known failing but fix is non-trivial: https://github.com/bevyengine/bevy/issues/4381"]
+        fn filtered_components() {
+            let mut world = World::new();
+            world.insert_resource(R);
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((
+                with_filtered_component_system,
+                without_filtered_component_system,
+            ));
+
+            let result = schedule.initialize(&mut world);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn events() {
+            let mut world = World::new();
+            world.init_resource::<Events<E>>();
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            // All of these systems clash
+            schedule.add_systems((
+                event_reader_system,
+                event_writer_system,
+                event_resource_system,
+            ));
+
+            let result = schedule.initialize(&mut world);
+            // ambiguity_count == 3
+            assert!(matches!(result, Err(ScheduleBuildError::Ambiguity)));
+        }
+
+        #[test]
+        fn exclusive() {
+            let mut world = World::new();
+            world.insert_resource(R);
+            world.spawn(A);
+            world.init_resource::<Events<E>>();
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            // All of these systems clash
+            schedule.add_systems((
+                // All 3 of these conflict with each other
+                write_world_system,
+                write_world_system,
+                res_system,
+            ));
+
+            let result = schedule.initialize(&mut world);
+            // ambiguity_count == 3
+            assert!(matches!(result, Err(ScheduleBuildError::Ambiguity)));
+        }
+
+        // Tests for silencing and resolving ambiguities
+
+        #[test]
+        fn before_and_after() {
+            let mut world = World::new();
+            world.init_resource::<Events<E>>();
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((
+                event_reader_system.before(event_writer_system),
+                event_writer_system,
+                event_resource_system.after(event_writer_system),
+            ));
+
+            let result = schedule.initialize(&mut world);
+            assert!(result.is_ok());
+        }
+
+        // TODO: couldn't figure out if there was analogous functionality for this test
+        #[test]
+        fn ignore_all_ambiguities() {
+            let mut world = World::new();
+            world.insert_resource(R);
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((
+                resmut_system.ambiguous_with_all(),
+                res_system,
+                nonsend_system,
+            ));
+
+            let result = schedule.initialize(&mut world);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn ambiguous_with_label() {
+            let mut world = World::new();
+            world.insert_resource(R);
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((
+                write_component_system.ambiguous_with(TestSet::X),
+                res_system.in_set(TestSet::X),
+                nonsend_system.in_set(TestSet::X),
+            ));
+
+            let result = schedule.initialize(&mut world);
+            assert!(result.is_ok());
+        }
+
+        #[test]
+        fn ambiguous_with_system() {
+            let mut world = World::new();
+            world.insert_resource(R);
+
+            let mut schedule = Schedule::new();
+            schedule.set_build_settings(
+                ScheduleBuildSettings::default().with_ambiguity_detection(LogLevel::Error),
+            );
+            schedule.add_systems((
+                write_component_system.ambiguous_with(read_component_system),
+                read_component_system,
+            ));
+
+            let result = schedule.initialize(&mut world);
+            assert!(result.is_ok());
+        }
+
+        // TODO: needs changes to be able to check the output
+        // fn system_a(_res: ResMut<R>) {}
+        // fn system_b(_res: ResMut<R>) {}
+        // fn system_c(_res: ResMut<R>) {}
+        // fn system_d(_res: ResMut<R>) {}
+        // fn system_e(_res: ResMut<R>) {}
+
+        // // Tests that the correct ambiguities were reported in the correct order.
+        // #[test]
+        // fn correct_ambiguities() {
+        //     use super::*;
+
+        //     let mut world = World::new();
+        //     world.insert_resource(R);
+
+        //     let mut test_stage = SystemStage::parallel();
+        //     test_stage
+        //         .add_system(system_a)
+        //         .add_system(system_b)
+        //         .add_system(system_c.ignore_all_ambiguities())
+        //         .add_system(system_d.ambiguous_with(system_b))
+        //         .add_system(system_e.after(system_a));
+
+        //     test_stage.run(&mut world);
+
+        //     let ambiguities = test_stage.ambiguities(&world);
+        //     assert_eq!(
+        //         ambiguities,
+        //         vec![
+        //             SystemOrderAmbiguity {
+        //                 system_names: [
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::system_a".to_string(),
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::system_b".to_string()
+        //                 ],
+        //                 conflicts: vec![
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::R".to_string()
+        //                 ],
+        //                 segment: SystemStageSegment::Parallel,
+        //             },
+        //             SystemOrderAmbiguity {
+        //                 system_names: [
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::system_a".to_string(),
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::system_d".to_string()
+        //                 ],
+        //                 conflicts: vec![
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::R".to_string()
+        //                 ],
+        //                 segment: SystemStageSegment::Parallel,
+        //             },
+        //             SystemOrderAmbiguity {
+        //                 system_names: [
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::system_b".to_string(),
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::system_e".to_string()
+        //                 ],
+        //                 conflicts: vec![
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::R".to_string()
+        //                 ],
+        //                 segment: SystemStageSegment::Parallel,
+        //             },
+        //             SystemOrderAmbiguity {
+        //                 system_names: [
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::system_d".to_string(),
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::system_e".to_string()
+        //                 ],
+        //                 conflicts: vec![
+        //                     "bevy_ecs::schedule::ambiguity_detection::tests::R".to_string()
+        //                 ],
+        //                 segment: SystemStageSegment::Parallel,
+        //             },
+        //         ]
+        //     );
+        // }
     }
 }
