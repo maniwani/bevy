@@ -49,8 +49,8 @@ pub mod prelude {
             OnTransition, Schedule, Schedules, State, States, SystemSet,
         },
         system::{
-            Commands, Deferred, In, IntoSystem, Local, NonSend, NonSendMut, ParallelCommands,
-            ParamSet, Query, ReadOnlySystem, Res, ResMut, Resource, System, SystemParamFunction,
+            Commands, Deferred, In, IntoSystem, Local, NonSend, NonSendMut, ParamSet, Query,
+            ReadOnlySystem, Res, ResMut, Resource, System, SystemParamFunction,
         },
         world::{EntityMut, EntityRef, EntityWorldMut, FromWorld, World},
     };

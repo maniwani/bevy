@@ -216,10 +216,6 @@ pub fn impl_param_set(_input: TokenStream) -> TokenStream {
                     <(#(#param,)*) as SystemParam>::new_archetype(state, archetype, system_meta);
                 }
 
-                fn apply(state: &mut Self::State, system_meta: &SystemMeta, world: &mut World) {
-                    <(#(#param,)*) as SystemParam>::apply(state, system_meta, world);
-                }
-
                 #[inline]
                 unsafe fn get_param<'w, 's>(
                     state: &'s mut Self::State,
@@ -400,10 +396,6 @@ pub fn derive_system_param(input: TokenStream) -> TokenStream {
 
                 fn new_archetype(state: &mut Self::State, archetype: &#path::archetype::Archetype, system_meta: &mut #path::system::SystemMeta) {
                     <#fields_alias::<'_, '_, #punctuated_generic_idents> as #path::system::SystemParam>::new_archetype(&mut state.state, archetype, system_meta)
-                }
-
-                fn apply(state: &mut Self::State, system_meta: &#path::system::SystemMeta, world: &mut #path::world::World) {
-                    <#fields_alias::<'_, '_, #punctuated_generic_idents> as #path::system::SystemParam>::apply(&mut state.state, system_meta, world);
                 }
 
                 unsafe fn get_param<'w, 's>(

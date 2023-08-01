@@ -1,8 +1,11 @@
 use std::mem::MaybeUninit;
+use std::sync::Mutex;
+
+use thread_local::ThreadLocal;
 
 use bevy_ptr::{OwningPtr, Unaligned};
 
-use super::Command;
+use crate::system::Command;
 use crate::world::World;
 
 struct CommandMeta {
@@ -13,30 +16,30 @@ struct CommandMeta {
     apply_command_and_get_size: unsafe fn(value: OwningPtr<Unaligned>, world: &mut World) -> usize,
 }
 
-/// Densely and efficiently stores a queue of heterogenous types implementing [`Command`].
-//
-// NOTE: [`CommandQueue`] is implemented via a `Vec<MaybeUninit<u8>>` instead of a `Vec<Box<dyn Command>>`
-// as an optimization. Since commands are used frequently in systems as a way to spawn
-// entities/components/resources, and it's not currently possible to parallelize these
-// due to mutable [`World`] access, maximizing performance for [`CommandQueue`] is
-// preferred to simplicity of implementation.
+/// An append-only queue that densely and efficiently stores heterogenous types implementing
+/// [`Command`].
 #[derive(Default)]
-pub struct CommandQueue {
-    // This buffer densely stores all queued commands.
-    //
-    // For each command, one `CommandMeta` is stored, followed by zero or more bytes
-    // to store the command itself. To interpret these bytes, a pointer must
-    // be passed to the corresponding `CommandMeta.apply_command_and_get_size` fn pointer.
+pub struct RawCommandQueue {
+    /// This buffer densely stores all queued commands.
+    ///
+    /// Commands can only be applied with exclusive access to the [`World`] and systems might issue
+    /// hundreds of them, so they need to be extremely efficient at scale. `Vec<Box<dyn Command>>`
+    /// allocates new memory for every single command, which has signifant overhead. To avoid that,
+    /// we manually manage and recycle the memory owned by the `Vec<MaybeUninit<u8>>`.
+    ///
+    /// For each command, one `CommandMeta` is stored, followed by zero or more bytes
+    /// to store the command itself. To interpret these bytes, a pointer must
+    /// be passed to the corresponding `CommandMeta.apply_command_and_get_size` fn pointer.
     bytes: Vec<MaybeUninit<u8>>,
 }
 
-// SAFETY: All commands [`Command`] implement [`Send`]
-unsafe impl Send for CommandQueue {}
+// SAFETY: All types that implement [`Command`] are required to implement [`Send`].
+unsafe impl Send for RawCommandQueue {}
 
-// SAFETY: `&CommandQueue` never gives access to the inner commands.
-unsafe impl Sync for CommandQueue {}
+// SAFETY: `&RawCommandQueue` never gives access to the inner commands.
+unsafe impl Sync for RawCommandQueue {}
 
-impl CommandQueue {
+impl RawCommandQueue {
     /// Push a [`Command`] onto the queue.
     #[inline]
     pub fn push<C>(&mut self, command: C)
@@ -90,8 +93,7 @@ impl CommandQueue {
         }
     }
 
-    /// Execute the queued [`Command`]s in the world.
-    /// This clears the queue.
+    /// Applies all queued commands on the world, in insertion order, then clears the queue.
     #[inline]
     pub fn apply(&mut self, world: &mut World) {
         // flush the previously queued entities
@@ -136,6 +138,37 @@ impl CommandQueue {
             cursor = unsafe { cursor.add(size) };
         }
     }
+
+    /// Moves all the commands of `other` into `self`, leaving `other` empty.
+    pub(crate) fn append(&mut self, other: &mut Self) {
+        self.bytes.append(&mut other.bytes);
+    }
+}
+
+/// A thread-safe command queue (stores one per thread).
+#[derive(Default)]
+pub struct CommandQueue {
+    queues: ThreadLocal<Mutex<RawCommandQueue>>,
+}
+
+impl CommandQueue {
+    /// TODO
+    pub fn scope<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut RawCommandQueue) -> R,
+    {
+        let mutex = self.queues.get_or_default();
+        let mut queue = mutex.try_lock().expect("no nested `scope` calls");
+        f(&mut *queue)
+    }
+
+    /// Applies all queued commands on the world, in insertion order, then clears the queue.
+    pub fn apply(&mut self, world: &mut World) {
+        for mutex in self.queues.iter_mut() {
+            let mut queue = mutex.try_lock().unwrap();
+            queue.apply(world);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -170,7 +203,7 @@ mod test {
 
     #[test]
     fn test_command_queue_inner_drop() {
-        let mut queue = CommandQueue::default();
+        let mut queue = RawCommandQueue::default();
 
         let (dropcheck_a, drops_a) = DropCheck::new();
         let (dropcheck_b, drops_b) = DropCheck::new();
@@ -198,7 +231,7 @@ mod test {
 
     #[test]
     fn test_command_queue_inner() {
-        let mut queue = CommandQueue::default();
+        let mut queue = RawCommandQueue::default();
 
         queue.push(SpawnCommand);
         queue.push(SpawnCommand);
@@ -228,7 +261,7 @@ mod test {
     fn test_command_queue_inner_panic_safe() {
         std::panic::set_hook(Box::new(|_| {}));
 
-        let mut queue = CommandQueue::default();
+        let mut queue = RawCommandQueue::default();
 
         queue.push(PanicCommand("I panic!".to_owned()));
         queue.push(SpawnCommand);
@@ -251,8 +284,8 @@ mod test {
         assert_eq!(world.entities().len(), 2);
     }
 
-    // NOTE: `CommandQueue` is `Send` because `Command` is send.
-    // If the `Command` trait gets reworked to be non-send, `CommandQueue`
+    // NOTE: `RawCommandQueue` is `Send` because `Command` is send.
+    // If the `Command` trait gets reworked to be non-send, `RawCommandQueue`
     // should be reworked.
     // This test asserts that Command types are send.
     fn assert_is_send_impl(_: impl Send) {}
@@ -273,7 +306,7 @@ mod test {
     #[cfg(miri)]
     #[test]
     fn test_uninit_bytes() {
-        let mut queue = CommandQueue::default();
+        let mut queue = RawCommandQueue::default();
         queue.push(CommandWithPadding(0, 0));
         let _ = format!("{:?}", queue.bytes);
     }

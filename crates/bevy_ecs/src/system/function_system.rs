@@ -7,7 +7,7 @@ use crate::{
     world::{unsafe_world_cell::UnsafeWorldCell, World, WorldId},
 };
 
-use bevy_utils::all_tuples;
+use bevy_utils::{all_tuples, default};
 use std::{any::TypeId, borrow::Cow, marker::PhantomData};
 
 #[cfg(feature = "trace")]
@@ -213,14 +213,6 @@ impl<Param: SystemParam> SystemState<Param> {
         self.update_archetypes(world);
         // SAFETY: World is uniquely borrowed and matches the World this SystemState was created with.
         unsafe { self.get_unchecked_manual(world.as_unsafe_world_cell()) }
-    }
-
-    /// Applies all state queued up for [`SystemParam`] values. For example, this will apply commands queued up
-    /// by a [`Commands`](`super::Commands`) parameter to the given [`World`].
-    /// This function should be called manually after the values returned by [`SystemState::get`] and [`SystemState::get_mut`]
-    /// are finished being used.
-    pub fn apply(&mut self, world: &mut World) {
-        Param::apply(&mut self.param_state, &self.meta, world);
     }
 
     /// Returns `true` if `world_id` matches the [`World`] that was used to call [`SystemState::new`].
@@ -496,8 +488,8 @@ where
 
     #[inline]
     fn apply_deferred(&mut self, world: &mut World) {
-        let param_state = self.param_state.as_mut().expect(Self::PARAM_MESSAGE);
-        F::Param::apply(param_state, &self.system_meta, world);
+        // let param_state = self.param_state.as_mut().expect(Self::PARAM_MESSAGE);
+        // F::Param::apply(param_state, &self.system_meta, world);
     }
 
     #[inline]

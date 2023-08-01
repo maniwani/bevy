@@ -1,9 +1,13 @@
 use bevy_utils::tracing::warn;
 use core::fmt::Debug;
 
-use crate::component::Tick;
-use crate::world::unsafe_world_cell::UnsafeWorldCell;
-use crate::{archetype::ArchetypeComponentId, component::ComponentId, query::Access, world::World};
+use crate::{
+    archetype::ArchetypeComponentId,
+    component::{ComponentId, Tick},
+    query::Access,
+    system::CommandQueue,
+    world::{unsafe_world_cell::UnsafeWorldCell, World},
+};
 
 use std::any::TypeId;
 use std::borrow::Cow;
@@ -95,16 +99,25 @@ pub trait System: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// Gets the tick indicating the last time this system ran.
+    /// Returns the [`Tick`] indicating the last time this system ran.
     fn get_last_run(&self) -> Tick;
 
-    /// Overwrites the tick indicating the last time this system ran.
+    /// Overwrites the [`Tick`] indicating the last time this system ran.
     ///
     /// # Warning
-    /// This is a complex and error-prone operation, that can have unexpected consequences on any system relying on this code.
-    /// However, it can be an essential escape hatch when, for example,
-    /// you are trying to synchronize representations using change detection and need to avoid infinite recursion.
+    ///
+    /// Using this can have unexpected consequences for any system relying on reliable detection of
+    /// changes.
+    ///
+    /// An example use case is a loop containing both systems that react to component `X` mutations
+    /// and systems that mutate `X`. Without `set_last_run`, there would be no way to treat them as
+    /// one unit. They would be stuck infinitely detecting their own changes.
     fn set_last_run(&mut self, last_run: Tick);
+
+    /// Returns a mutable reference to the system's [`CommandQueue`].
+    fn commands(&mut self) -> &mut CommandQueue {
+        todo!()
+    }
 }
 
 /// [`System`] types that do not modify the [`World`] when run.
