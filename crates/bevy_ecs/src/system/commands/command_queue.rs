@@ -14,6 +14,41 @@ struct CommandMeta {
     ///
     /// Returns the size of `T` in bytes.
     apply_command_and_get_size: unsafe fn(value: OwningPtr<Unaligned>, world: &mut World) -> usize,
+    // get_command_effect_and_size: unsafe fn(value: OwningPtr<Unaligned>, world: &mut World) -> usize,
+}
+
+struct Meta {
+    next_command_for_entity: Option<isize>,
+}
+
+pub fn batch_commands_for_entity(entity: crate::entity::Entity, first_command: isize) {
+    use EntityCommandKind::*;
+    let mut next_command_for_entity = Some(first_command);
+    while let Some(command_offset) = next_command_for_entity {
+        // assert!(command.is_entity_command());
+        match command {
+            Spawn => {
+                // dst = ArchetypeId::EMPTY;
+            }
+            Insert => {
+                // get component / bundle ID
+                // dst = traverse edge
+            }
+            Remove => {
+                // get component / bundle ID
+                // dst = traverse edge
+            }
+            Despawn => {
+                // dst = ArchetypeId::INVALID;
+            }
+        }
+
+        next_command_for_entity = command.next_command_for_entity();
+    }
+
+    // trace!("batched {} commands for entity {}", n, entity);
+
+    // move entity to its new archetype
 }
 
 /// An append-only queue that densely and efficiently stores heterogenous types implementing
@@ -31,6 +66,8 @@ pub struct RawCommandQueue {
     /// to store the command itself. To interpret these bytes, a pointer must
     /// be passed to the corresponding `CommandMeta.apply_command_and_get_size` fn pointer.
     bytes: Vec<MaybeUninit<u8>>,
+    /// The number of commands in the queue.
+    count: usize,
 }
 
 // SAFETY: All types that implement [`Command`] are required to implement [`Send`].
@@ -91,6 +128,8 @@ impl RawCommandQueue {
             self.bytes
                 .set_len(old_len + std::mem::size_of::<Packed<C>>());
         }
+
+        self.count += 1;
     }
 
     /// Applies all queued commands on the world, in insertion order, then clears the queue.
@@ -109,6 +148,8 @@ impl RawCommandQueue {
         // In the loop below, ownership of each command will be transferred into user code.
         // SAFETY: `set_len(0)` is always valid.
         unsafe { self.bytes.set_len(0) };
+
+        self.count = 0;
 
         while (cursor as usize) < end_addr {
             // SAFETY: The cursor is either at the start of the buffer, or just after the previous command.
@@ -142,6 +183,7 @@ impl RawCommandQueue {
     /// Moves all the commands of `other` into `self`, leaving `other` empty.
     pub(crate) fn append(&mut self, other: &mut Self) {
         self.bytes.append(&mut other.bytes);
+        self.count += std::mem::take(&mut other.count);
     }
 }
 

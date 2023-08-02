@@ -45,6 +45,31 @@ pub trait Command: Send + 'static {
     /// Because this method takes `self`, you can store data or settings on the type that implements this trait.
     /// This data is set by the system or other source of the command, and then ultimately read in this method.
     fn apply(self, world: &mut World);
+
+    fn command_info(&self) -> CommandDesc {
+        CommandDesc::Custom
+    }
+
+    fn bundle_info(world: &mut World) -> Option<&BundleInfo> {
+        None
+    }
+}
+
+pub enum CommandDesc {
+    Custom,
+    Entity(EntityCommandDesc),
+}
+
+pub struct EntityCommandDesc {
+    entity: Entity,
+    kind: EntityCommandKind,
+}
+
+enum EntityCommandKind {
+    Spawn,
+    Despawn,
+    Insert,
+    Remove,
 }
 
 /// A [`Command`] queue.
