@@ -1,10 +1,14 @@
 use std::mem::MaybeUninit;
+use std::num::NonZeroIsize;
 use std::sync::Mutex;
 
 use thread_local::ThreadLocal;
 
 use bevy_ptr::{OwningPtr, Unaligned};
 
+use crate::component::ComponentId;
+use crate::entity::Entity;
+use crate::storage::SparseArray;
 use crate::system::Command;
 use crate::world::World;
 
@@ -17,12 +21,35 @@ struct CommandMeta {
     // get_command_effect_and_size: unsafe fn(value: OwningPtr<Unaligned>, world: &mut World) -> usize,
 }
 
-struct Meta {
-    next_command_for_entity: Option<isize>,
+// tell if command is entity command or not
+// tell how entity command is going to move
+// in `bevy`, "add" and "set" cannot be separated (because Default is not required)
+// build up diff
+// apply diff (adds, then removes)
+// run commands (if linked list, iterate then change to skip)
+
+struct ArchetypeDiff {
+    added: Box<[ComponentId]>,
+    removed: Box<[ComponentId]>,
 }
 
-pub fn batch_commands_for_entity(entity: crate::entity::Entity, first_command: isize) {
-    use EntityCommandKind::*;
+struct ArchetypeDiffBuilder {
+    added: Vec<ComponentId>,
+    removed: Vec<ComponentId>,
+}
+
+struct Meta {
+    next_command_for_entity: Option<NonZeroIsize>,
+}
+
+struct Metas {
+    last_command_for_entity: SparseArray<Entity, CommandQueueOffset>,
+}
+
+struct CommandQueueOffset(isize);
+
+pub fn batch_commands_for_entity(entity: Entity, first_command: isize) {
+    use EntityCommandDesc::*;
     let mut next_command_for_entity = Some(first_command);
     while let Some(command_offset) = next_command_for_entity {
         // assert!(command.is_entity_command());
@@ -62,9 +89,9 @@ pub struct RawCommandQueue {
     /// allocates new memory for every single command, which has signifant overhead. To avoid that,
     /// we manually manage and recycle the memory owned by the `Vec<MaybeUninit<u8>>`.
     ///
-    /// For each command, one `CommandMeta` is stored, followed by zero or more bytes
-    /// to store the command itself. To interpret these bytes, a pointer must
-    /// be passed to the corresponding `CommandMeta.apply_command_and_get_size` fn pointer.
+    /// For each command, a `CommandMeta` is stored, followed by zero or more bytes that store the
+    /// command itself. To interpret these bytes, a pointer must be passed to the corresponding
+    /// `CommandMeta::apply_command_and_get_size` function pointer.
     bytes: Vec<MaybeUninit<u8>>,
     /// The number of commands in the queue.
     count: usize,
@@ -122,8 +149,7 @@ impl RawCommandQueue {
         }
 
         // Extend the length of the buffer to include the data we just wrote.
-        // SAFETY: The new length is guaranteed to fit in the vector's capacity,
-        // due to the call to `.reserve()` above.
+        // SAFETY: The new length is guaranteed to be valid from the call to `.reserve()` above.
         unsafe {
             self.bytes
                 .set_len(old_len + std::mem::size_of::<Packed<C>>());
@@ -143,13 +169,6 @@ impl RawCommandQueue {
 
         // The address of the end of the buffer.
         let end_addr = cursor as usize + self.bytes.len();
-
-        // Reset the buffer, so it can be reused after this function ends.
-        // In the loop below, ownership of each command will be transferred into user code.
-        // SAFETY: `set_len(0)` is always valid.
-        unsafe { self.bytes.set_len(0) };
-
-        self.count = 0;
 
         while (cursor as usize) < end_addr {
             // SAFETY: The cursor is either at the start of the buffer, or just after the previous command.
@@ -178,12 +197,47 @@ impl RawCommandQueue {
             // or 1 byte past the end, so this addition will not overflow the pointer's allocation.
             cursor = unsafe { cursor.add(size) };
         }
+
+        // Reset the buffer, so it can be reused after this function ends.
+        // In the loop above, ownership of each command was transferred into user code.
+        // SAFETY: `set_len(0)` is always valid.
+        unsafe {
+            std::ptr::write_bytes(&mut self.bytes, 0, self.bytes.len());
+            self.bytes.set_len(0);
+        };
+
+        self.count = 0;
     }
 
     /// Moves all the commands of `other` into `self`, leaving `other` empty.
     pub(crate) fn append(&mut self, other: &mut Self) {
-        self.bytes.append(&mut other.bytes);
-        self.count += std::mem::take(&mut other.count);
+        // sum lengths and counts
+        let new_len = self.bytes.len() + other.bytes.len();
+        let new_count = self.count + other.count;
+
+        // Vec::append but using memcpy
+        self.bytes.reserve(other.bytes.len());
+        let spare_bytes = self.bytes.spare_capacity_mut();
+        // TODO: can replace with MaybeUninit<T>::write_slice if it stabilizes
+        // SAFETY: [MaybeUninit<MaybeUninit<T>>] is equivalent to [MaybeUninit<T>].
+        let spare_bytes: &mut [MaybeUninit<u8>] = unsafe { std::mem::transmute(spare_bytes) };
+        spare_bytes.copy_from_slice(&other.bytes);
+
+        // Ownership of each command was transferred to `self`.
+        // SAFETY: `set_len(0)` is always valid.
+        unsafe {
+            std::ptr::write_bytes(&mut other.bytes, 0, other.bytes.len());
+            other.bytes.set_len(0);
+        };
+
+        other.count = 0;
+
+        // SAFETY: The new length is guaranteed to be valid from the call to `.reserve()` above.
+        unsafe {
+            self.bytes.set_len(new_len);
+        }
+
+        self.count = new_count;
     }
 }
 

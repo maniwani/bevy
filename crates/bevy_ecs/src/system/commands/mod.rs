@@ -46,17 +46,13 @@ pub trait Command: Send + 'static {
     /// This data is set by the system or other source of the command, and then ultimately read in this method.
     fn apply(self, world: &mut World);
 
-    fn command_info(&self) -> CommandDesc {
-        CommandDesc::Custom
-    }
-
-    fn bundle_info(world: &mut World) -> Option<&BundleInfo> {
-        None
+    fn desc(world: &mut World) -> CommandDesc {
+        CommandDesc::Unknown
     }
 }
 
 pub enum CommandDesc {
-    Custom,
+    Unknown,
     Entity(EntityCommandDesc),
 }
 
@@ -68,8 +64,8 @@ pub struct EntityCommandDesc {
 enum EntityCommandKind {
     Spawn,
     Despawn,
-    Insert,
-    Remove,
+    Insert(std::any::TypeId),
+    Remove(std::any::TypeId),
 }
 
 /// A [`Command`] queue.
