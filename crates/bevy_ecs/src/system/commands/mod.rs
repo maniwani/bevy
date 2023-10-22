@@ -4,8 +4,8 @@ use crate::{
     bundle::Bundle,
     component::Tick,
     entity::{Entities, Entity},
-    system::{RunSystem, SystemId},
-    world::{EntityWorldMut, FromWorld, World},
+    system::{ReadOnlySystemParam, RunSystem, SystemId, SystemParam},
+    world::{unsafe_world_cell::UnsafeWorldCell, EntityWorldMut, FromWorld, World},
 };
 use bevy_utils::tracing::{error, info};
 pub use command_queue::CommandQueue;
@@ -45,27 +45,6 @@ pub trait Command: Send + 'static {
     /// Because this method takes `self`, you can store data or settings on the type that implements this trait.
     /// This data is set by the system or other source of the command, and then ultimately read in this method.
     fn apply(self, world: &mut World);
-
-    fn desc(world: &mut World) -> CommandDesc {
-        CommandDesc::Unknown
-    }
-}
-
-pub enum CommandDesc {
-    Unknown,
-    Entity(EntityCommandDesc),
-}
-
-pub struct EntityCommandDesc {
-    entity: Entity,
-    kind: EntityCommandKind,
-}
-
-enum EntityCommandKind {
-    Spawn,
-    Despawn,
-    Insert(std::any::TypeId),
-    Remove(std::any::TypeId),
 }
 
 /// A [`Command`] queue.
@@ -76,7 +55,7 @@ enum EntityCommandKind {
 ///
 /// Commands can modify the [`World`] in arbitrary ways:
 /// * spawn or despawn entities
-/// * insert components on new or existing entities
+/// * add or remove components to entities
 /// * insert resources
 /// * etc.
 ///
@@ -147,11 +126,11 @@ unsafe impl SystemParam for Commands<'_, '_> {
 
     unsafe fn get_param<'w, 's>(
         _state: &'s mut Self::State,
-        _system_meta: &SystemMeta,
-        _world: UnsafeWorldCell<'w>,
+        system_meta: &SystemMeta,
+        world: UnsafeWorldCell<'w>,
         _change_tick: Tick,
     ) -> Self::Item<'w, 's> {
-        todo!()
+        Commands::new_from_entities(&system_meta.commands, world.entities())
     }
 }
 
@@ -556,8 +535,8 @@ impl<'w, 's> Commands<'w, 's> {
     /// Running slow systems can become a bottleneck.
     ///
     /// Calls [`World::run_system`](crate::system::World::run_system).
-    pub fn run_system(&mut self, id: SystemId) {
-        self.queue.push(RunSystem::new(id));
+    pub fn run_system(&self, id: SystemId) {
+        self.queue.scope(|queue| queue.push(RunSystem::new(id)));
     }
 
     /// Pushes a generic [`Command`] to the command queue.

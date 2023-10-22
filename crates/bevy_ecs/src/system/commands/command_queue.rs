@@ -1,5 +1,5 @@
 use std::mem::MaybeUninit;
-use std::num::NonZeroIsize;
+// use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
 use thread_local::ThreadLocal;
@@ -12,70 +12,418 @@ use crate::storage::SparseArray;
 use crate::system::Command;
 use crate::world::World;
 
+// TODO: modify entity command creation so it converts TypeId into ComponentId?
+// TODO: split bundles into individual commands
+// TODO: encounter Insert, check component ID exists in sparse set, if not, claim data ptr and change kind to skip
+// TODO: clear IDs from diff that are in both added and removed, properly drop any values in the sparse set
+
+/// Used to construct a [`TypeDef`].
+#[derive(Clone)]
+pub(crate) struct TypeDefBuilder {
+    ids: Vec<ComponentId>,
+}
+
+impl TypeDefBuilder {
+    fn new() -> Self {
+        Self { ids: Vec::new() }
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            ids: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn add(&mut self, id: ComponentId) {
+        todo!()
+    }
+
+    fn remove(&mut self, id: ComponentId) {
+        todo!()
+    }
+
+    fn build(mut self) -> TypeDef {
+        self.ids.sort();
+        self.ids.dedup();
+
+        TypeDef {
+            ids: self.ids.into_boxed_slice(),
+        }
+    }
+}
+
+/// A hashable representation of a set of components.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub(crate) struct TypeDef {
+    ids: Box<[ComponentId]>,
+}
+
+impl TypeDef {
+    /// The `TypeDef` representing no components.
+    const EMPTY: TypeDef = TypeDef { ids: Box::new([]) };
+
+    fn new_with(&self, id: ComponentId) -> Option<TypeDef> {
+        if let Some(index) = self.find_insert(id, 0) {
+            let n = self.ids.len();
+            let mut new = TypeDefBuilder::with_capacity(n + 1);
+            // memcpy, add, memcpy
+            new.ids.extend_from_slice(&self.ids[0..index]);
+            new.ids.push(id);
+            new.ids.extend_from_slice(&self.ids[index..n]);
+            Some(new.build())
+        } else {
+            None
+        }
+    }
+
+    fn new_without(&self, id: ComponentId) -> Option<TypeDef> {
+        let n = self.ids.len();
+        let index = self.find(id, 0);
+
+        if index.is_none() {
+            return None;
+        } else if n == 1 {
+            return Some(Self::EMPTY);
+        }
+
+        let i = index.unwrap();
+
+        let mut dst = TypeDefBuilder::with_capacity(n - 1);
+        // memcpy, memcpy
+        dst.ids.extend_from_slice(&self.ids[0..i]);
+        dst.ids.extend_from_slice(&self.ids[(i + 1)..n]);
+        Some(dst.build())
+    }
+
+    fn find_insert(&self, id_to_add: ComponentId, start: usize) -> Option<usize> {
+        // // TODO: partition_point?
+        // let index = start + self.ids[start..].partition_point(|&id| id < id_to_add);
+        // if self.ids[index] == id_to_add {
+        //     None
+        // } else {
+        //     Some(index)
+        // }
+
+        for (i, id) in self.ids.iter().skip(start).copied().enumerate() {
+            // TODO: ecs_id_match
+            if id == id_to_add {
+                return None;
+            } else if id > id_to_add {
+                return Some(i);
+            }
+        }
+
+        Some(self.ids.len())
+    }
+
+    fn find(&self, id_to_remove: ComponentId, start: usize) -> Option<usize> {
+        // // TODO: partition_point?
+        // let index = start + self.ids[start..].partition_point(|&id| id < id_to_remove);
+        // if self.ids[index] == id_to_add {
+        //     Some(index)
+        // } else {
+        //     None
+        // }
+
+        for (i, id) in self.ids.iter().skip(start).copied().enumerate() {
+            // TODO: ecs_id_match
+            if id == id_to_remove {
+                return Some(i);
+            } else if id > id_to_remove {
+                return None;
+            }
+        }
+
+        None
+    }
+}
+
+enum Init {
+    /// The component will be initialized with the provided value.
+    Move(CommandDataPtr),
+    /// The component will be initialized with its `Default` or `Clone` constructor.
+    Ctor,
+}
+
+#[derive(Clone)]
+pub(crate) struct TypeDiffBuilder {
+    added: Vec<ComponentId>,
+    removed: Vec<ComponentId>,
+}
+
+impl TypeDiffBuilder {
+    fn new() -> Self {
+        Self {
+            added: Vec::new(),
+            removed: Vec::new(),
+        }
+    }
+
+    fn with_capacity(added: usize, removed: usize) -> Self {
+        Self {
+            added: Vec::with_capacity(added),
+            removed: Vec::with_capacity(removed),
+        }
+    }
+
+    fn build(mut self) -> TypeDiff {
+        self.added.sort();
+        self.added.dedup();
+        self.removed.sort();
+        self.removed.dedup();
+
+        TypeDiff {
+            added: self.added.into_boxed_slice(),
+            removed: self.removed.into_boxed_slice(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct TypeDiff {
+    added: Box<[ComponentId]>,
+    removed: Box<[ComponentId]>,
+}
+
+enum EdgeContent {
+    Component(ComponentId),
+    Diff(TypeDiff),
+}
+
+fn compute_table_diff(
+    src_archetype: &Archetype,
+    dst_archetype: &Archetype,
+    id: ComponentId,
+) -> EdgeContent {
+    let src_ids = src_archetype.components();
+    let dst_ids = dst_archetype.components();
+
+    let mut src_index = 0;
+    let src_count = src_ids.len();
+
+    let mut dst_index = 0;
+    let dst_count = dst_ids.len();
+
+    let mut added_count = 0;
+    let mut removed_count = 0;
+
+    let edge_is_complex = false; // id.lhs() == EcsIsA;
+
+    // First compute the size of the diff, so we only have to allocate once.
+    //
+    // There is an efficient algorithm to compute the intersection of two sorted lists with linear
+    // time complexity. That algorithm has been altered to instead compute their difference.
+    while src_index < src_count && dst_index < dst_count {
+        let src_id = src_ids[src_index];
+        let dst_id = dst_ids[dst_index];
+
+        // `dst_id` is missing from source.
+        let added = dst_id < src_id;
+        // `src_id` is missing from destination.
+        let removed = src_id < dst_id;
+
+        // The edge is "complex" if it adds or removes components other than `id`.
+        edge_is_complex |= added && (dst_id != id);
+        edge_is_complex |= removed && (src_id != id);
+
+        added_count += added as usize;
+        removed_count += removed as usize;
+
+        src_index += (src_id <= dst_id) as usize;
+        dst_index += (dst_id <= src_id) as usize;
+    }
+
+    // When we reach the end of one list, we know all remaining components will be included (added
+    // if src is exhausted first, removed if dst is exhausted first).
+    let dst_remaining = dst_count - dst_index;
+    let src_remaining = src_count - src_index;
+
+    added_count += dst_remaining;
+    removed_count += src_remaining;
+
+    // The edge is "complex" if multiple components are changing.
+    edge_is_complex |= (added_count + removed_count) > 1;
+    // The edge is "complex" if it is removing a wildcard or wildcarded pair.
+    // edge_is_complex |= id.is_wildcard();
+
+    if !edge_is_complex {
+        return EdgeContent::Component(id);
+    }
+
+    let mut builder = TypeDiffBuilder::with_capacity(added_count, removed_count);
+    src_index = 0;
+    dst_index = 0;
+
+    while src_index < src_count && dst_index < dst_count {
+        let src_id = src_ids[src_index];
+        let dst_id = dst_ids[dst_index];
+
+        if dst_id < src_id {
+            builder.added.push(dst_id);
+        } else if src_id < dst_id {
+            builder.removed.push(src_id);
+        }
+
+        src_index += (src_id <= dst_id) as usize;
+        dst_index += (dst_id <= src_id) as usize;
+    }
+
+    // memcpy
+    builder
+        .added
+        .extend_from_slice(&dst_ids[dst_index..dst_count]);
+    builder
+        .removed
+        .extend_from_slice(&src_ids[src_index..src_count]);
+
+    let diff = builder.build();
+    EdgeContent::Diff(diff)
+}
+
+pub(crate) enum NewCommandMeta {
+    Entity(EntityCommandMeta),
+    Custom(CustomCommandMeta),
+}
+
+pub(crate) enum EntityCommandKind {
+    Spawn,
+    Insert(ComponentId, CommandDataPtr),
+    Remove(ComponentId),
+    Despawn,
+    Skip,
+}
+
+struct EntityCommandMeta {
+    entity: Entity,
+    next_command_for_entity: Option<usize>,
+    kind: EntityCommandKind,
+}
+
+struct CustomCommandMeta {
+    /// SAFETY: The `value` must point to a value of type `T: Command`,
+    /// where `T` is some specific type that was used to produce this metadata.
+    ///
+    /// Returns the size of `T` in bytes.
+    apply_command_and_get_size: unsafe fn(value: OwningPtr<Unaligned>, world: &mut World) -> usize,
+}
+
+pub struct NewCommandQueue {
+    queue: Vec<NewCommandMeta>,
+    alloc: CommandDataAllocator,
+}
+
+#[derive(Default)]
+pub struct CommandDataAllocator {
+    /// This buffer densely stores all command data.
+    ///
+    /// Commands can only be applied with exclusive access to the [`World`] and systems might issue
+    /// hundreds of them, so they need to be extremely efficient at scale. `Vec<Box<dyn Command>>`
+    /// allocates new memory for every single command, which has signifant overhead. To avoid that,
+    /// we manually manage and recycle the memory owned by this `Vec<MaybeUninit<u8>>`.
+    bytes: Vec<MaybeUninit<u8>>,
+}
+
+struct Staging {
+    last_command_for_entity: SparseArray<Entity, CommandDataPtr>,
+}
+
+struct CommandDataPtr(usize);
+
+pub fn batch_commands_for_entity(entity: Entity, first_command: usize) {
+    use EntityCommandKind::*;
+    let mut next_command_for_entity = Some(first_command);
+    while let Some(command_index) = next_command_for_entity {
+        let command: EntityCommandMeta;
+
+        // assert!(command.is_entity_command());
+        match command.kind {
+            Spawn => {
+                // dst = ArchetypeId::EMPTY;
+            }
+            Insert(id, value) => {
+                // dst = traverse edge
+            }
+            Remove(id) => {
+                // dst = traverse edge
+            }
+            Despawn => {
+                // dst = ArchetypeId::INVALID;
+            }
+            Skip => (),
+        }
+
+        next_command_for_entity = command.next_command_for_entity;
+    }
+
+    // trace!("batched {} commands for entity {}", n, entity);
+
+    // move entity to its new archetype
+}
+
+fn batch_commands(
+    &mut self,
+    entity: Entity,
+    commands: &mut Commands,
+    index: usize,
+    diff: &mut TypeDiffBuilder,
+) {
+    let start_table = if let Some(location) = self.entities.get_location(entity) {
+        location.table_id
+    } else {
+        TableId::EMPTY
+    };
+
+    let mut table = start_table;
+
+    // Track the diff to run the appropriate hooks.
+    let mut diff = TypeDiffBuilder::new();
+
+    let mut next_command_for_entity = Some(zig_zag_encode(index));
+    while let Some(encoded_index) = next_command_for_entity {
+        let index = zig_zag_decode(encoded_index);
+        let mut command = unsafe { commands.get_mut_unchecked(index) };
+
+        match command.kind {
+            Add { ids, .. } => {
+                // TODO: Modified
+                // If entity already has a component, and the component has an OnSet hook (type-level), we
+                // need to invoke it here. This will ensure that any OnAdd/OnRemove observers see the most
+                // recent value.
+                table.find_add_component_destination(command.id, diff);
+                command.kind = Skip;
+            }
+            Set { ids, .. } => {
+                has_set = true;
+                table.find_add_component_destination(command.id, diff);
+            }
+            Remove { ids } => {
+                table.find_remove_component_destination(command.id, diff);
+                command.kind = Skip;
+            }
+            RemoveAll => {
+                // Commands can only remove components that the entity had.
+                diff.removed.clear();
+                diff.removed.reserve(start_table.component_count());
+                diff.removed.extend_from_slice(start_table.components());
+                command.kind = Skip;
+            }
+            _ => (),
+        }
+    }
+
+    // Move entity to its final destination.
+    diff.build();
+    world.deferred(|world| {
+        world.commit(/* ... */);
+    });
+}
+
 struct CommandMeta {
     /// SAFETY: The `value` must point to a value of type `T: Command`,
     /// where `T` is some specific type that was used to produce this metadata.
     ///
     /// Returns the size of `T` in bytes.
     apply_command_and_get_size: unsafe fn(value: OwningPtr<Unaligned>, world: &mut World) -> usize,
-    // get_command_effect_and_size: unsafe fn(value: OwningPtr<Unaligned>, world: &mut World) -> usize,
-}
-
-// tell if command is entity command or not
-// tell how entity command is going to move
-// in `bevy`, "add" and "set" cannot be separated (because Default is not required)
-// build up diff
-// apply diff (adds, then removes)
-// run commands (if linked list, iterate then change to skip)
-
-struct ArchetypeDiff {
-    added: Box<[ComponentId]>,
-    removed: Box<[ComponentId]>,
-}
-
-struct ArchetypeDiffBuilder {
-    added: Vec<ComponentId>,
-    removed: Vec<ComponentId>,
-}
-
-struct Meta {
-    next_command_for_entity: Option<NonZeroIsize>,
-}
-
-struct Metas {
-    last_command_for_entity: SparseArray<Entity, CommandQueueOffset>,
-}
-
-struct CommandQueueOffset(isize);
-
-pub fn batch_commands_for_entity(entity: Entity, first_command: isize) {
-    use EntityCommandDesc::*;
-    let mut next_command_for_entity = Some(first_command);
-    while let Some(command_offset) = next_command_for_entity {
-        // assert!(command.is_entity_command());
-        match command {
-            Spawn => {
-                // dst = ArchetypeId::EMPTY;
-            }
-            Insert => {
-                // get component / bundle ID
-                // dst = traverse edge
-            }
-            Remove => {
-                // get component / bundle ID
-                // dst = traverse edge
-            }
-            Despawn => {
-                // dst = ArchetypeId::INVALID;
-            }
-        }
-
-        next_command_for_entity = command.next_command_for_entity();
-    }
-
-    // trace!("batched {} commands for entity {}", n, entity);
-
-    // move entity to its new archetype
 }
 
 /// An append-only queue that densely and efficiently stores heterogenous types implementing
