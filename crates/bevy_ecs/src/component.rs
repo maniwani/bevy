@@ -1,5 +1,8 @@
 //! Types for declaring and storing [`Component`]s.
 
+use crate::archetype::{ArchetypeComponentId, ArchetypeId};
+use crate::archetype_maps::SparseMap;
+use crate::storage::{SparseSet, TableColumn, TableId};
 use crate::{
     self as bevy_ecs,
     change_detection::MAX_CHANGE_AGE,
@@ -10,6 +13,7 @@ use crate::{
 };
 pub use bevy_ecs_macros::Component;
 use bevy_ptr::{OwningPtr, UnsafeCellDeref};
+use bevy_utils::HashMap;
 use std::cell::UnsafeCell;
 use std::{
     alloc::Layout,
@@ -265,24 +269,19 @@ impl ComponentInfo {
     }
 }
 
-/// A value which uniquely identifies the type of a [`Component`] within a
-/// [`World`](crate::world::World).
+/// A unique ID of a [`Component`].
 ///
-/// Each time a new `Component` type is registered within a `World` using
-/// [`World::init_component`](crate::world::World::init_component) or
-/// [`World::init_component_with_descriptor`](crate::world::World::init_component_with_descriptor),
-/// a corresponding `ComponentId` is created to track it.
+/// Each time a new component is registered using [`World::init_component`](crate::world::World::init_component)
+/// or [`World::init_component_with_descriptor`](crate::world::World::init_component_with_descriptor),
+/// a unique `ComponentId` is created for it.
 ///
-/// While the distinction between `ComponentId` and [`TypeId`] may seem superficial, breaking them
-/// into two separate but related concepts allows components to exist outside of Rust's type system.
-/// Each Rust type registered as a `Component` will have a corresponding `ComponentId`, but additional
-/// `ComponentId`s may exist in a `World` to track components which cannot be
-/// represented as Rust types for scripting or other advanced use-cases.
+/// It may seem like `ComponentId` serves no purpose when [`TypeId`] already exists, but an identifier
+/// created at runtime allows for more than just Rust types to be registered as components.
 ///
-/// A `ComponentId` is tightly coupled to its parent `World`. Attempting to use a `ComponentId` from
-/// one `World` to access the metadata of a `Component` in a different `World` is undefined behavior
-/// and must not be attempted.
-#[derive(Debug, Copy, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
+/// **Note:** `ComponentId` values are only valid in the world they come from. Assume that using an
+/// `ComponentId` value from one world to access data in another world will either fail or result in
+/// undefined behavior.
+#[derive(Clone, Copy, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ComponentId(usize);
 
 impl ComponentId {
@@ -430,10 +429,30 @@ impl ComponentDescriptor {
     }
 }
 
-/// Stores metadata associated with each kind of [`Component`] in a given [`World`].
+#[derive(Debug)]
+pub(crate) struct ComponentArchetypeInfo {
+    pub(crate) id: ArchetypeComponentId,
+    pub(crate) column: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct ComponentTableInfo {
+    pub(crate) column: usize,
+}
+
+/// Runtime information about a component.
+#[derive(Debug)]
+struct ComponentIndexRecord {
+    pub(crate) id: ComponentId,
+    pub(crate) archetypes: SparseMap<ArchetypeId, ComponentArchetypeInfo>,
+    pub(crate) tables: SparseMap<TableId, ComponentTableInfo>,
+}
+
+/// Stores metadata for every known [`Component`].
 #[derive(Debug, Default)]
 pub struct Components {
     components: Vec<ComponentInfo>,
+    pub(crate) location_index: Vec<ComponentIndexRecord>,
     indices: TypeIdMap<usize>,
     resource_indices: TypeIdMap<usize>,
 }

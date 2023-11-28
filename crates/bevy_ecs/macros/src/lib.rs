@@ -70,8 +70,8 @@ pub fn derive_bundle(input: TokenStream) -> TokenStream {
         .collect::<Vec<_>>();
 
     let mut field_component_ids = Vec::new();
-    let mut field_get_components = Vec::new();
-    let mut field_from_components = Vec::new();
+    let mut field_map_components = Vec::new();
+    let mut field_read_components = Vec::new();
     for ((field_type, field_kind), field) in
         field_type.iter().zip(field_kind.iter()).zip(field.iter())
     {
@@ -80,16 +80,16 @@ pub fn derive_bundle(input: TokenStream) -> TokenStream {
                 field_component_ids.push(quote! {
                 <#field_type as #ecs_path::bundle::Bundle>::component_ids(components, storages, &mut *ids);
                 });
-                field_get_components.push(quote! {
-                    self.#field.get_components(&mut *func);
+                field_map_components.push(quote! {
+                    self.#field.map_components(&mut *func);
                 });
-                field_from_components.push(quote! {
-                    #field: <#field_type as #ecs_path::bundle::Bundle>::from_components(ctx, &mut *func),
+                field_read_components.push(quote! {
+                    #field: <#field_type as #ecs_path::bundle::Bundle>::read_components(ctx, &mut *func),
                 });
             }
 
             BundleFieldKind::Ignore => {
-                field_from_components.push(quote! {
+                field_read_components.push(quote! {
                     #field: ::std::default::Default::default(),
                 });
             }
@@ -101,8 +101,8 @@ pub fn derive_bundle(input: TokenStream) -> TokenStream {
 
     TokenStream::from(quote! {
         // SAFETY:
-        // - ComponentId is returned in field-definition-order. [from_components] and [get_components] use field-definition-order
-        // - `Bundle::get_components` is exactly once for each member. Rely's on the Component -> Bundle implementation to properly pass
+        // - ComponentId is returned in field-definition-order. [read_components] and [map_components] use field-definition-order
+        // - `Bundle::map_components` is exactly once for each member. Rely's on the Component -> Bundle implementation to properly pass
         //   the correct `StorageType` into the callback.
         unsafe impl #impl_generics #ecs_path::bundle::Bundle for #struct_name #ty_generics #where_clause {
             fn component_ids(
@@ -114,12 +114,12 @@ pub fn derive_bundle(input: TokenStream) -> TokenStream {
             }
 
             #[allow(unused_variables, non_snake_case)]
-            unsafe fn from_components<__T, __F>(ctx: &mut __T, func: &mut __F) -> Self
+            unsafe fn read_components<__T, __F>(ctx: &mut __T, func: &mut __F) -> Self
             where
                 __F: FnMut(&mut __T) -> #ecs_path::ptr::OwningPtr<'_>
             {
                 Self {
-                    #(#field_from_components)*
+                    #(#field_read_components)*
                 }
             }
         }
@@ -127,11 +127,11 @@ pub fn derive_bundle(input: TokenStream) -> TokenStream {
         impl #impl_generics #ecs_path::bundle::DynamicBundle for #struct_name #ty_generics #where_clause {
             #[allow(unused_variables)]
             #[inline]
-            fn get_components(
+            unsafe fn map_components(
                 self,
                 func: &mut impl FnMut(#ecs_path::component::StorageType, #ecs_path::ptr::OwningPtr<'_>)
             ) {
-                #(#field_get_components)*
+                #(#field_map_components)*
             }
         }
     })

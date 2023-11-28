@@ -12,10 +12,12 @@ pub use spawn_batch::*;
 pub use world_cell::*;
 
 use crate::{
-    archetype::{ArchetypeComponentId, ArchetypeId, ArchetypeRow, Archetypes},
-    bundle::{Bundle, BundleInserter, BundleSpawner, Bundles},
+    archetype::{ArchetypeComponentId, ArchetypeId, ArchetypeRow, Archetypes, Move},
+    bundle::{take_component, Bundle, BundleInserter, BundleSpawner, Bundles},
     change_detection::{MutUntyped, TicksMut},
-    component::{Component, ComponentDescriptor, ComponentId, ComponentInfo, Components, Tick},
+    component::{
+        Component, ComponentDescriptor, ComponentId, ComponentInfo, Components, StorageType, Tick,
+    },
     entity::{AllocAtWithoutReplacement, Entities, Entity, EntityLocation},
     event::{Event, Events},
     query::{DebugCheckedUnwrap, QueryState, ReadOnlyWorldQuery, WorldQuery},
@@ -26,7 +28,7 @@ use crate::{
     world::error::TryRunScheduleError,
 };
 use bevy_ptr::{OwningPtr, Ptr};
-use bevy_utils::tracing::warn;
+use bevy_utils::tracing::{debug, warn};
 use std::{
     any::TypeId,
     fmt,
@@ -516,7 +518,7 @@ impl World {
             let bundle_info = self
                 .bundles
                 .init_info::<B>(&mut self.components, &mut self.storages);
-            let mut spawner = bundle_info.get_bundle_spawner(
+            let mut spawner = bundle_info.make_bundle_spawner(
                 &mut self.entities,
                 &mut self.archetypes,
                 &mut self.components,
@@ -622,9 +624,224 @@ impl World {
         unsafe { self.as_unsafe_world_cell().get_entity(entity)?.get_mut() }
     }
 
-    /// Despawns the given `entity`, if it exists. This will also remove all of the entity's
-    /// [Component]s. Returns `true` if the `entity` is successfully despawned and `false` if
-    /// the `entity` does not exist.
+    /// Adds the [`Bundle`] of components to the entity.
+    ///
+    /// Any components the entity already has will be overwritten.
+    pub(crate) fn insert<T: Bundle>(&mut self, entity: Entity, bundle: T) {
+        self.flush();
+        if let Some(location) = self.entities.get(entity) {
+            // SAFETY: entity is alive and we have its valid location
+            unsafe {
+                self.insert_internal(entity, location, bundle);
+            }
+        } else {
+            warn!(
+                "error[B0003]: Could not add {} to entity {:?} because it doesn't exist.",
+                std::any::type_name::<T>(),
+                entity
+            );
+        }
+    }
+
+    /// # Safety
+    ///
+    /// - The `entity` is alive.
+    /// - The `location` belongs to the `entity`.
+    pub(crate) unsafe fn insert_internal<T: Bundle>(
+        &mut self,
+        entity: Entity,
+        location: EntityLocation,
+        bundle: T,
+    ) -> EntityLocation {
+        let change_tick = self.change_tick();
+        let bundle_info = self
+            .bundles
+            .init_info::<T>(&mut self.components, &mut self.storages);
+
+        let mut bundle_inserter = bundle_info.make_bundle_inserter(
+            &mut self.entities,
+            &mut self.archetypes,
+            &mut self.components,
+            &mut self.storages,
+            location.archetype_id,
+            change_tick,
+        );
+
+        // SAFETY: `location` belongs to `entity` and `bundle_info` belongs to `T`
+        unsafe { bundle_inserter.insert(entity, location, bundle) }
+    }
+
+    /// Removes any components in the [`Bundle`] from the entity.
+    pub(crate) fn remove<T: Bundle>(&mut self, entity: Entity) {
+        self.flush();
+        if let Some(location) = self.entities.get(entity) {
+            // SAFETY: entity is alive and we have its valid location
+            unsafe {
+                self.remove_internal::<T>(entity, location);
+            }
+        } else {
+            warn!(
+                "error[B0003]: Could not remove {} from entity {:?} because it doesn't exist.",
+                std::any::type_name::<T>(),
+                entity
+            );
+        }
+    }
+
+    /// # Safety
+    ///
+    /// - The `entity` is alive.
+    /// - The `location` belongs to the `entity`.
+    pub(crate) unsafe fn remove_internal<T: Bundle>(
+        &mut self,
+        entity: Entity,
+        location: EntityLocation,
+    ) -> EntityLocation {
+        let entities = &mut self.entities;
+        let components = &mut self.components;
+        let archetypes = &mut self.archetypes;
+        let storages = &mut self.storages;
+        let removed_components = &mut self.removed_components;
+
+        let bundle_info = self.bundles.init_info::<T>(components, storages);
+
+        let (new_archetype_id, _) = archetypes.remove_bundle_from_archetype(
+            bundle_info,
+            location.archetype_id,
+            components,
+            storages,
+            true,
+        );
+
+        if new_archetype_id == location.archetype_id {
+            return location;
+        }
+
+        let old_archetype = archetypes
+            .get_mut(location.archetype_id)
+            .debug_checked_unwrap();
+
+        let mut bundle_components = bundle_info.component_ids.iter().cloned();
+        for component_id in bundle_components {
+            if old_archetype.contains(component_id) {
+                removed_components.send(component_id, entity);
+
+                // Drop sparse set component.
+                // Table components will be dropped in `move_entity`.
+                // TODO: Avoid lookup. Could get storage types from T.
+                if let Some(StorageType::SparseSet) = old_archetype.get_storage_type(component_id) {
+                    storages
+                        .sparse_sets
+                        .get_mut(component_id)
+                        .debug_checked_unwrap()
+                        .remove(entity);
+                }
+            }
+        }
+
+        // SAFETY: The provided location is correct. The values being removed will be dropped.
+        unsafe {
+            archetypes.move_entity(
+                Move::Remove,
+                entity,
+                location,
+                new_archetype_id,
+                entities,
+                storages,
+            )
+        }
+    }
+
+    /// Removes the components in the [`Bundle`] from the entity and returns their values.
+    ///
+    /// **Note:** This will not remove any components and will return `None` if the entity does not
+    /// have all components in the bundle.
+    pub(crate) fn take<T: Bundle>(&mut self, entity: Entity) -> Option<T> {
+        self.flush();
+        if let Some(location) = self.entities.get(entity) {
+            // SAFETY: entity is alive and we have its valid location
+            let (_, result) = unsafe { self.take_internal::<T>(entity, location) };
+            result
+        } else {
+            warn!(
+                "error[B0003]: Could not take {} from entity {:?} because it doesn't exist.",
+                std::any::type_name::<T>(),
+                entity
+            );
+
+            None
+        }
+    }
+
+    /// # Safety
+    ///
+    /// - The `entity` is alive.
+    /// - The `location` belongs to the `entity`.
+    pub(crate) unsafe fn take_internal<T: Bundle>(
+        &mut self,
+        entity: Entity,
+        location: EntityLocation,
+    ) -> (EntityLocation, Option<T>) {
+        let entities = &mut self.entities;
+        let components = &mut self.components;
+        let archetypes = &mut self.archetypes;
+        let storages = &mut self.storages;
+        let removed_components = &mut self.removed_components;
+
+        let bundle_info = self.bundles.init_info::<T>(components, storages);
+
+        let (new_archetype_id, has_all_components) = archetypes.remove_bundle_from_archetype(
+            bundle_info,
+            location.archetype_id,
+            components,
+            storages,
+            true,
+        );
+
+        if !has_all_components || (new_archetype_id == location.archetype_id) {
+            return (location, None);
+        }
+
+        let mut bundle_components = bundle_info.component_ids.iter().cloned();
+        // SAFETY: If `T` is a tuple, its components are always iterated in the same order
+        // they appear in `T`, which matches what we need to return.
+        let result = unsafe {
+            T::read_components(storages, &mut |storages| {
+                let component_id = bundle_components.next().debug_checked_unwrap();
+                // SAFETY:
+                // - entity location is valid
+                // - table row is removed below, without dropping the contents
+                // - `components` comes from the same world as `storages`
+                take_component(
+                    entity,
+                    location,
+                    component_id,
+                    components,
+                    storages,
+                    removed_components,
+                )
+            })
+        };
+
+        // SAFETY: The provided location is correct.
+        // We've shallow-copied the values above, so we need to forget them in their
+        // original location. And only the values we have removed will be forgotten.
+        let new_location = unsafe {
+            archetypes.move_entity(
+                Move::Take,
+                entity,
+                location,
+                new_archetype_id,
+                entities,
+                storages,
+            )
+        };
+
+        (new_location, Some(result))
+    }
+
+    /// Permanently deletes `entity` and all of its components, returning `true` if it was
+    /// successfully deleted and `false` if it did not exist.
     /// ```
     /// use bevy_ecs::{component::Component, world::World};
     ///
@@ -642,13 +859,63 @@ impl World {
     /// ```
     #[inline]
     pub fn despawn(&mut self, entity: Entity) -> bool {
-        if let Some(entity) = self.get_entity_mut(entity) {
-            entity.despawn();
+        self.flush();
+        if let Some(location) = self.entities.get(entity) {
+            // SAFETY:
+            unsafe {
+                self.despawn_internal(entity, location);
+            }
             true
         } else {
-            warn!("error[B0003]: Could not despawn entity {:?} because it doesn't exist in this World.", entity);
+            warn!(
+                "error[B0003]: Could not despawn entity {:?} because it doesn't exist.",
+                entity
+            );
             false
         }
+    }
+
+    /// # Safety
+    ///
+    /// - The `entity` is alive.
+    /// - The `location` belongs to the `entity`.
+    pub(crate) unsafe fn despawn_internal(&mut self, entity: Entity, location: EntityLocation) {
+        debug!("Despawning entity {:?}", entity);
+        let entities = &mut self.entities;
+        let components = &mut self.components;
+        let archetypes = &mut self.archetypes;
+        let storages = &mut self.storages;
+        let removed_components = &mut self.removed_components;
+
+        // Update events.
+        let archetype = archetypes.get(location.archetype_id).unwrap();
+        for component_id in archetype.components() {
+            removed_components.send(component_id, entity);
+        }
+
+        // Drop sparse set components.
+        for component_id in archetype.sparse_set_components() {
+            let sparse_set = storages.sparse_sets.get_mut(component_id).unwrap();
+            sparse_set.remove(entity);
+        }
+
+        // Drop table components.
+        // SAFETY: The provided location is correct. The values being removed will be dropped.
+        unsafe {
+            archetypes.move_entity(
+                Move::Remove,
+                entity,
+                location,
+                ArchetypeId::EMPTY,
+                entities,
+                storages,
+            );
+        }
+
+        // Free the entity.
+        self.entities
+            .free(entity)
+            .expect("entity should exist at this point.");
     }
 
     /// Clears the internal component tracker state.
@@ -1211,6 +1478,7 @@ impl World {
         let bundle_info = self
             .bundles
             .init_info::<B>(&mut self.components, &mut self.storages);
+
         enum SpawnOrInsert<'a, 'b> {
             Spawn(BundleSpawner<'a, 'b>),
             Insert(BundleInserter<'a, 'b>, ArchetypeId),
@@ -1224,7 +1492,7 @@ impl World {
                 }
             }
         }
-        let mut spawn_or_insert = SpawnOrInsert::Spawn(bundle_info.get_bundle_spawner(
+        let mut spawn_or_insert = SpawnOrInsert::Spawn(bundle_info.make_bundle_spawner(
             &mut self.entities,
             &mut self.archetypes,
             &mut self.components,
@@ -1247,7 +1515,7 @@ impl World {
                             unsafe { inserter.insert(entity, location, bundle) };
                         }
                         _ => {
-                            let mut inserter = bundle_info.get_bundle_inserter(
+                            let mut inserter = bundle_info.make_bundle_inserter(
                                 &mut self.entities,
                                 &mut self.archetypes,
                                 &mut self.components,
@@ -1267,7 +1535,7 @@ impl World {
                         // SAFETY: `entity` is allocated (but non existent), bundle matches inserter
                         unsafe { spawner.spawn_non_existent(entity, bundle) };
                     } else {
-                        let mut spawner = bundle_info.get_bundle_spawner(
+                        let mut spawner = bundle_info.make_bundle_spawner(
                             &mut self.entities,
                             &mut self.archetypes,
                             &mut self.components,
@@ -1442,13 +1710,10 @@ impl World {
         &mut self,
         component_id: ComponentId,
     ) -> &mut ResourceData<true> {
-        let archetype_component_count = &mut self.archetypes.archetype_component_count;
         self.storages
             .resources
             .initialize_with(component_id, &self.components, || {
-                let id = ArchetypeComponentId::new(*archetype_component_count);
-                *archetype_component_count += 1;
-                id
+                self.archetypes.next_archetype_component()
             })
     }
 
@@ -1459,13 +1724,11 @@ impl World {
         &mut self,
         component_id: ComponentId,
     ) -> &mut ResourceData<false> {
-        let archetype_component_count = &mut self.archetypes.archetype_component_count;
+        let archetype_component_count = &mut self.archetypes.archetype_component_count();
         self.storages
             .non_send_resources
             .initialize_with(component_id, &self.components, || {
-                let id = ArchetypeComponentId::new(*archetype_component_count);
-                *archetype_component_count += 1;
-                id
+                self.archetypes.next_archetype_component()
             })
     }
 
@@ -1481,9 +1744,9 @@ impl World {
         component_id
     }
 
-    /// Empties queued entities and adds them to the empty [Archetype](crate::archetype::Archetype).
+    /// Empties queued entities and adds them to the empty [`Archetype`](crate::archetype::Archetype).
     /// This should be called before doing operations that might operate on queued entities,
-    /// such as inserting a [Component].
+    /// such as inserting a [`Component`].
     pub(crate) fn flush(&mut self) {
         let empty_archetype = self.archetypes.empty_mut();
         let table = &mut self.storages.tables[empty_archetype.table_id()];
@@ -1770,8 +2033,9 @@ impl World {
         f: impl FnOnce(&mut World, &mut Schedule) -> R,
     ) -> Result<R, TryRunScheduleError> {
         let label = label.as_ref();
-        let Some((extracted_label, mut schedule))
-            = self.get_resource_mut::<Schedules>().and_then(|mut s| s.remove_entry(label))
+        let Some((extracted_label, mut schedule)) = self
+            .get_resource_mut::<Schedules>()
+            .and_then(|mut s| s.remove_entry(label))
         else {
             return Err(TryRunScheduleError(label.dyn_clone()));
         };

@@ -59,13 +59,14 @@ use std::sync::atomic::AtomicIsize as AtomicIdCursor;
 #[cfg(not(target_has_atomic = "64"))]
 type IdCursor = isize;
 
-/// Lightweight identifier of an [entity](crate::entity).
+/// The opaque, unique ID of an [entity](crate::entity).
 ///
-/// The identifier is implemented using a [generational index]: a combination of an index and a generation.
-/// This allows fast insertion after data removal in an array while minimizing loss of spatial locality.
+/// This type is implemented as a [generational index]. Using indices makes random access and
+/// memory usage efficient while the versioning prevents aliasing as those indices are recycled.
 ///
-/// These identifiers are only valid on the [`World`] it's sourced from. Attempting to use an `Entity` to
-/// fetch entity components or metadata from a different world will either fail or return unexpected results.
+/// **Note:** `Entity` values are only valid in the world they come from. Assume that using an
+/// `Entity` value from one world to access data in another world will either fail or result in
+/// undefined behavior.
 ///
 /// [generational index]: https://lucassardois.medium.com/generational-indices-guide-8e3c5f7fd594
 ///
@@ -115,6 +116,7 @@ type IdCursor = isize;
 /// [`EntityCommands`]: crate::system::EntityCommands
 /// [`Query::get`]: crate::system::Query::get
 /// [`World`]: crate::world::World
+#[repr(C, align(4))]
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Entity {
     generation: u32,
@@ -304,12 +306,12 @@ impl<'a> Iterator for ReserveEntitiesIterator<'a> {
 impl<'a> core::iter::ExactSizeIterator for ReserveEntitiesIterator<'a> {}
 impl<'a> core::iter::FusedIterator for ReserveEntitiesIterator<'a> {}
 
-/// A [`World`]'s internal metadata store on all of its entities.
+/// Stores metadata on every [`Entity`] in the [`World`].
 ///
-/// Contains metadata on:
-///  - The generation of every entity.
-///  - The alive/dead status of a particular entity. (i.e. "has entity 3 been despawned?")
-///  - The location of the entity's components in memory (via [`EntityLocation`])
+/// For each entity, the metadata tracks:
+///  - its current generation
+///  - if it's dead or alive
+///  - the location of its component data (see: [`EntityLocation`])
 ///
 /// [`World`]: crate::world::World
 #[derive(Debug)]

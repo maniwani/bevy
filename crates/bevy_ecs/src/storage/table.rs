@@ -2,7 +2,7 @@ use crate::{
     component::{ComponentId, ComponentInfo, ComponentTicks, Components, Tick, TickCells},
     entity::Entity,
     query::DebugCheckedUnwrap,
-    storage::{blob_vec::BlobVec, ImmutableSparseSet, SparseSet},
+    storage::{blob_vec::BlobVec, ImmutableSparseSet, SparseSet, SparseSetIndex},
 };
 use bevy_ptr::{OwningPtr, Ptr, PtrMut, UnsafeCellDeref};
 use bevy_utils::HashMap;
@@ -14,8 +14,7 @@ use std::{
 
 /// An opaque unique ID for a [`Table`] within a [`World`].
 ///
-/// Can be used with [`Tables::get`] to fetch the corresponding
-/// table.
+/// Use with [`Tables::get`] to access the corresponding table.
 ///
 /// Each [`Archetype`] always points to a table via [`Archetype::table_id`].
 /// Multiple archetypes can point to the same table so long as the components
@@ -25,7 +24,7 @@ use std::{
 /// [`World`]: crate::world::World
 /// [`Archetype`]: crate::archetype::Archetype
 /// [`Archetype::table_id`]: crate::archetype::Archetype::table_id
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // SAFETY: Must be repr(transparent) due to the safety requirements on EntityLocation
 #[repr(transparent)]
 pub struct TableId(u32);
@@ -57,17 +56,34 @@ impl TableId {
     }
 }
 
-/// A opaque newtype for rows in [`Table`]s. Specifies a single row in a specific table.
+impl SparseSetIndex for TableId {
+    fn sparse_set_index(&self) -> usize {
+        self.0 as usize
+    }
+
+    fn get_sparse_set_index(value: usize) -> Self {
+        Self(value as u32)
+    }
+}
+
+/// A column in a [`Table`].
 ///
-/// Values of this type are retrievable from [`Archetype::entity_table_row`] and can be
-/// used alongside [`Archetype::table_id`] to fetch the exact table and row where an
-/// [`Entity`]'s
+/// This is the index of the (conceptual) [`Vec<T>`] that stores all data for a specific component
+/// in the [`Table`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct TableColumn(pub(crate) u32);
+
+/// The row index where an entity's data is stored in a [`Table`]. An entity's data is stored at
+/// the same row in each [`Column`].
 ///
-/// Values of this type are only valid so long as entities have not moved around.
-/// Adding and removing components from an entity, or despawning it will invalidate
-/// potentially any table row in the table the entity was previously stored in. Users
-/// should *always* fetch the appropriate row from the entity's [`Archetype`] before
-/// fetching the entity's components.
+/// An entity's table row can be acquired from [`Archetype::entity_table_row`] and can be used
+/// alongside [`Archetype::table_id`] to locate its data.
+///
+/// When components are added to or removed from an entity, that entity will be moved to another
+/// [`Table`]. This move will usually invalidate another row in the initial [`Table`], so don't
+/// cache this value. Always get the current location of an entity from its [`Archetype`] before
+/// attempting to access its components.
 ///
 /// [`Archetype`]: crate::archetype::Archetype
 /// [`Archetype::entity_table_row`]: crate::archetype::Archetype::entity_table_row
@@ -94,19 +110,21 @@ impl TableRow {
     }
 }
 
-/// A type-erased contiguous container for data of a homogeneous type.
+/// A contiguous array of homogenous data.
+/// Essentially a `Vec<T>` whose type information has been elided.
 ///
-/// Conceptually, a [`Column`] is very similar to a type-erased `Vec<T>`.
-/// It also stores the change detection ticks for its components, kept in two separate
-/// contiguous buffers internally. An element shares its data across these buffers by using the
-/// same index (i.e. the entity at row 3 has it's data at index 3 and its change detection ticks at
-/// index 3). A slice to these contiguous blocks of memory can be fetched
-/// via [`Column::get_data_slice`], [`Column::get_added_ticks_slice`], and
-/// [`Column::get_changed_ticks_slice`].
+/// [`Column`] also stores two additional arrays containing the [`Added`] and [`Changed`] ticks of
+/// each component value. The three arrays are aligned such that a particular element has the same
+/// index in all three.
 ///
-/// Like many other low-level storage types, [`Column`] has a limited and highly unsafe
-/// interface. It's highly advised to use higher level types and their safe abstractions
-/// instead of working directly with [`Column`].
+/// Immutable slices over these arrays can be acquired using [`Column::get_data_slice`],
+/// [`Column::get_added_ticks_slice`], and [`Column::get_changed_ticks_slice`].
+///
+/// Like many other low-level storage types, [`Column`] has a highly `unsafe` interface. You are
+/// advised against interacting with [`Column`] directly.
+///
+/// [`Added`]: crate::query::Added
+/// [`Changed`]: crate::query::Changed
 #[derive(Debug)]
 pub struct Column {
     data: BlobVec,
@@ -126,10 +144,48 @@ impl Column {
         }
     }
 
-    /// Fetches the [`Layout`] for the underlying type.
+    /// Returns the [`Layout`] for the underlying type.
     #[inline]
     pub fn item_layout(&self) -> Layout {
         self.data.layout()
+    }
+
+    /// Returns the current number of rows in the column.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Returns `true` if there are no rows.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    /// Clears the column, removing all values.
+    ///
+    /// Note that this function has no effect on the allocated capacity of the [`Column`]>
+    pub fn clear(&mut self) {
+        self.data.clear();
+        self.added_ticks.clear();
+        self.changed_ticks.clear();
+    }
+
+    /// Appends a new value to the end of the [`Column`].
+    ///
+    /// # Safety
+    /// `ptr` must point to valid data of this column's component type
+    pub(crate) unsafe fn push(&mut self, ptr: OwningPtr<'_>, ticks: ComponentTicks) {
+        self.data.push(ptr);
+        self.added_ticks.push(UnsafeCell::new(ticks.added));
+        self.changed_ticks.push(UnsafeCell::new(ticks.changed));
+    }
+
+    #[inline]
+    pub(crate) fn reserve_exact(&mut self, additional: usize) {
+        self.data.reserve_exact(additional);
+        self.added_ticks.reserve_exact(additional);
+        self.changed_ticks.reserve_exact(additional);
     }
 
     /// Writes component data to the column at given row.
@@ -168,18 +224,6 @@ impl Column {
     pub(crate) unsafe fn replace_untracked(&mut self, row: TableRow, data: OwningPtr<'_>) {
         debug_assert!(row.index() < self.len());
         self.data.replace_unchecked(row.index(), data);
-    }
-
-    /// Gets the current number of elements stored in the column.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.data.len()
-    }
-
-    /// Checks if the column is empty. Returns `true` if there are no elements, `false` otherwise.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.data.is_empty()
     }
 
     /// Removes an element from the [`Column`].
@@ -263,37 +307,22 @@ impl Column {
     #[inline]
     pub(crate) unsafe fn initialize_from_unchecked(
         &mut self,
-        other: &mut Column,
-        src_row: TableRow,
         dst_row: TableRow,
+        src_column: &mut Column,
+        src_row: TableRow,
     ) {
-        debug_assert!(self.data.layout() == other.data.layout());
+        debug_assert!(self.data.layout() == src_column.data.layout());
         let ptr = self.data.get_unchecked_mut(dst_row.index());
-        other.data.swap_remove_unchecked(src_row.index(), ptr);
+        src_column.data.swap_remove_unchecked(src_row.index(), ptr);
+
         *self.added_ticks.get_unchecked_mut(dst_row.index()) =
-            other.added_ticks.swap_remove(src_row.index());
+            src_column.added_ticks.swap_remove(src_row.index());
+
         *self.changed_ticks.get_unchecked_mut(dst_row.index()) =
-            other.changed_ticks.swap_remove(src_row.index());
+            src_column.changed_ticks.swap_remove(src_row.index());
     }
 
-    /// Pushes a new value onto the end of the [`Column`].
-    ///
-    /// # Safety
-    /// `ptr` must point to valid data of this column's component type
-    pub(crate) unsafe fn push(&mut self, ptr: OwningPtr<'_>, ticks: ComponentTicks) {
-        self.data.push(ptr);
-        self.added_ticks.push(UnsafeCell::new(ticks.added));
-        self.changed_ticks.push(UnsafeCell::new(ticks.changed));
-    }
-
-    #[inline]
-    pub(crate) fn reserve_exact(&mut self, additional: usize) {
-        self.data.reserve_exact(additional);
-        self.added_ticks.reserve_exact(additional);
-        self.changed_ticks.reserve_exact(additional);
-    }
-
-    /// Fetches the data pointer to the first element of the [`Column`].
+    /// Returns a pointer to the first element of the [`Column`].
     ///
     /// The pointer is type erased, so using this function to fetch anything
     /// other than the first element will require computing the offset using
@@ -303,11 +332,11 @@ impl Column {
         self.data.get_ptr()
     }
 
-    /// Fetches the slice to the [`Column`]'s data cast to a given type.
+    /// Returns the slice to the [`Column`]'s data cast to the given type.
     ///
-    /// Note: The values stored within are [`UnsafeCell`].
-    /// Users of this API must ensure that accesses to each individual element
-    /// adhere to the safety invariants of [`UnsafeCell`].
+    /// **Note:** The values stored within are [`UnsafeCell`].
+    /// The user must ensure that each access to the individual elements
+    /// adheres to the safety invariants of [`UnsafeCell`].
     ///
     /// # Safety
     /// The type `T` must be the type of the items in this column.
@@ -317,11 +346,11 @@ impl Column {
         self.data.get_slice()
     }
 
-    /// Fetches the slice to the [`Column`]'s "added" change detection ticks.
+    /// Returns the slice to the [`Column`]'s "added" change detection ticks.
     ///
     /// Note: The values stored within are [`UnsafeCell`].
-    /// Users of this API must ensure that accesses to each individual element
-    /// adhere to the safety invariants of [`UnsafeCell`].
+    /// The user must ensure that each access to the individual elements
+    /// adheres to the safety invariants of [`UnsafeCell`].
     ///
     /// [`UnsafeCell`]: std::cell::UnsafeCell
     #[inline]
@@ -329,11 +358,11 @@ impl Column {
         &self.added_ticks
     }
 
-    /// Fetches the slice to the [`Column`]'s "changed" change detection ticks.
+    /// Returns the slice to the [`Column`]'s "changed" change detection ticks.
     ///
     /// Note: The values stored within are [`UnsafeCell`].
-    /// Users of this API must ensure that accesses to each individual element
-    /// adhere to the safety invariants of [`UnsafeCell`].
+    /// The user must ensure that each access to the individual elements
+    /// adheres to the safety invariants of [`UnsafeCell`].
     ///
     /// [`UnsafeCell`]: std::cell::UnsafeCell
     #[inline]
@@ -341,7 +370,7 @@ impl Column {
         &self.changed_ticks
     }
 
-    /// Fetches a reference to the data and change detection ticks at `row`.
+    /// Returns a reference to the data and change detection ticks at `row`.
     ///
     /// Returns `None` if `row` is out of bounds.
     #[inline]
@@ -360,7 +389,7 @@ impl Column {
             })
     }
 
-    /// Fetches a read-only reference to the data at `row`.
+    /// Returns a read-only reference to the data at `row`.
     ///
     /// Returns `None` if `row` is out of bounds.
     #[inline]
@@ -370,7 +399,7 @@ impl Column {
         (row.index() < self.data.len()).then(|| unsafe { self.data.get_unchecked(row.index()) })
     }
 
-    /// Fetches a read-only reference to the data at `row`. Unlike [`Column::get`] this does not
+    /// Returns a read-only reference to the data at `row`. Unlike [`Column::get`] this does not
     /// do any bounds checking.
     ///
     /// # Safety
@@ -382,7 +411,7 @@ impl Column {
         self.data.get_unchecked(row.index())
     }
 
-    /// Fetches a mutable reference to the data at `row`.
+    /// Returns a mutable reference to the data at `row`.
     ///
     /// Returns `None` if `row` is out of bounds.
     #[inline]
@@ -392,7 +421,7 @@ impl Column {
         (row.index() < self.data.len()).then(|| unsafe { self.data.get_unchecked_mut(row.index()) })
     }
 
-    /// Fetches a mutable reference to the data at `row`. Unlike [`Column::get_data_mut`] this does not
+    /// Returns a mutable reference to the data at `row`. Unlike [`Column::get_data_mut`] this does not
     /// do any bounds checking.
     ///
     /// # Safety
@@ -404,13 +433,13 @@ impl Column {
         self.data.get_unchecked_mut(row.index())
     }
 
-    /// Fetches the "added" change detection ticks for the value at `row`.
+    /// Returns the "added" change detection ticks for the value at `row`.
     ///
     /// Returns `None` if `row` is out of bounds.
     ///
     /// Note: The values stored within are [`UnsafeCell`].
-    /// Users of this API must ensure that accesses to each individual element
-    /// adhere to the safety invariants of [`UnsafeCell`].
+    /// The user must ensure that each access to the individual elements
+    /// adheres to the safety invariants of [`UnsafeCell`].
     ///
     /// [`UnsafeCell`]: std::cell::UnsafeCell
     #[inline]
@@ -418,13 +447,13 @@ impl Column {
         self.added_ticks.get(row.index())
     }
 
-    /// Fetches the "changed" change detection ticks for the value at `row`.
+    /// Returns the "changed" change detection ticks for the value at `row`.
     ///
     /// Returns `None` if `row` is out of bounds.
     ///
     /// Note: The values stored within are [`UnsafeCell`].
-    /// Users of this API must ensure that accesses to each individual element
-    /// adhere to the safety invariants of [`UnsafeCell`].
+    /// The user must ensure that each access to the individual elements
+    /// adheres to the safety invariants of [`UnsafeCell`].
     ///
     /// [`UnsafeCell`]: std::cell::UnsafeCell
     #[inline]
@@ -432,7 +461,7 @@ impl Column {
         self.changed_ticks.get(row.index())
     }
 
-    /// Fetches the change detection ticks for the value at `row`.
+    /// Returns the change detection ticks for the value at `row`.
     ///
     /// Returns `None` if `row` is out of bounds.
     #[inline]
@@ -445,7 +474,7 @@ impl Column {
         }
     }
 
-    /// Fetches the "added" change detection ticks for the value at `row`. Unlike [`Column::get_added_ticks`]
+    /// Returns the "added" change detection ticks for the value at `row`. Unlike [`Column::get_added_ticks`]
     /// this function does not do any bounds checking.
     ///
     /// # Safety
@@ -456,7 +485,7 @@ impl Column {
         self.added_ticks.get_unchecked(row.index())
     }
 
-    /// Fetches the "changed" change detection ticks for the value at `row`. Unlike [`Column::get_changed_ticks`]
+    /// Returns the "changed" change detection ticks for the value at `row`. Unlike [`Column::get_changed_ticks`]
     /// this function does not do any bounds checking.
     ///
     /// # Safety
@@ -467,7 +496,7 @@ impl Column {
         self.changed_ticks.get_unchecked(row.index())
     }
 
-    /// Fetches the change detection ticks for the value at `row`. Unlike [`Column::get_ticks`]
+    /// Returns the change detection ticks for the value at `row`. Unlike [`Column::get_ticks`]
     /// this function does not do any bounds checking.
     ///
     /// # Safety
@@ -480,15 +509,6 @@ impl Column {
             added: self.added_ticks.get_unchecked(row.index()).read(),
             changed: self.changed_ticks.get_unchecked(row.index()).read(),
         }
-    }
-
-    /// Clears the column, removing all values.
-    ///
-    /// Note that this function has no effect on the allocated capacity of the [`Column`]>
-    pub fn clear(&mut self) {
-        self.data.clear();
-        self.added_ticks.clear();
-        self.changed_ticks.clear();
     }
 
     #[inline]
@@ -536,173 +556,202 @@ impl TableBuilder {
     pub fn build(self) -> Table {
         Table {
             columns: self.columns.into_immutable(),
-            entities: Vec::with_capacity(self.capacity),
+            rows: Vec::with_capacity(self.capacity),
         }
     }
 }
 
-/// A column-oriented [structure-of-arrays] based storage for [`Component`]s of entities
-/// in a [`World`].
+/// An [SoA] structure that stores arrays of [`Component`] data (columns) for multiple entities
+/// (rows).
 ///
-/// Conceptually, a `Table` can be thought of as an `HashMap<ComponentId, Column>`, where
-/// each [`Column`] is a type-erased `Vec<T: Component>`. Each row corresponds to a single entity
-/// (i.e. index 3 in Column A and index 3 in Column B point to different components on the same
-/// entity). Fetching components from a table involves fetching the associated column for a
-/// component type (via its [`ComponentId`]), then fetching the entity's row within that column.
+/// A table behaves like a `HashMap<ComponentId, Column>`, where each [`Column`] is a [`Vec`]
+/// holding the component data. The components of a particular entity are stored at the same index
+/// in all columns.
 ///
-/// [structure-of-arrays]: https://en.wikipedia.org/wiki/AoS_and_SoA#Structure_of_arrays
+/// [SoA]: https://en.wikipedia.org/wiki/AoS_and_SoA#Structure_of_arrays
 /// [`Component`]: crate::component::Component
-/// [`World`]: crate::world::World
 pub struct Table {
     columns: ImmutableSparseSet<ComponentId, Column>,
-    entities: Vec<Entity>,
+    rows: Vec<Entity>,
 }
 
 impl Table {
-    /// Fetches a read-only slice of the entities stored within the [`Table`].
+    /// Returns the number of components (columns) in the table.
     #[inline]
-    pub fn entities(&self) -> &[Entity] {
-        &self.entities
+    pub fn component_count(&self) -> usize {
+        self.columns.len()
     }
 
-    /// Removes the entity at the given row and returns the entity swapped in to replace it (if an
-    /// entity was swapped in)
+    /// Returns the number of entities (rows) in the table.
+    #[inline]
+    pub fn entity_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Returns the maximum number of entities the table can currently store
+    /// without reallocating the underlying memory.
+    #[inline]
+    pub fn entity_capacity(&self) -> usize {
+        self.rows.capacity()
+    }
+
+    /// Returns `true` if the table has no entities.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Returns the entities stored in the [`Table`].
+    #[inline]
+    pub fn entities(&self) -> &[Entity] {
+        &self.rows
+    }
+
+    /// Clears all of the stored components in the table.
+    pub(crate) fn clear(&mut self) {
+        self.rows.clear();
+        for column in self.columns.values_mut() {
+            column.clear();
+        }
+    }
+
+    /// Swap-removes the data at the given row and returns the [`Entity`] of the entity whose
+    /// data was swapped into that position, if one existed.
     ///
     /// # Safety
-    /// `row` must be in-bounds
+    /// - `row` must be in-bounds.
     pub(crate) unsafe fn swap_remove_unchecked(&mut self, row: TableRow) -> Option<Entity> {
+        debug_assert!(row.index() < self.rows.len());
+        let is_last = row.index() == self.rows.len() - 1;
+        self.rows.swap_remove(row.index());
         for column in self.columns.values_mut() {
             column.swap_remove_unchecked(row);
         }
-        let is_last = row.index() == self.entities.len() - 1;
-        self.entities.swap_remove(row.index());
+
         if is_last {
             None
         } else {
-            Some(self.entities[row.index()])
+            Some(self.rows[row.index()])
         }
     }
 
-    /// Moves the `row` column values to `new_table`, for the columns shared between both tables.
-    /// Returns the index of the new row in `new_table` and the entity in this table swapped in
-    /// to replace it (if an entity was swapped in). missing columns will be "forgotten". It is
-    /// the caller's responsibility to drop them.  Failure to do so may result in resources not
-    /// being released (i.e. files handles not being released, memory leaks, etc.)
-    ///
     /// # Safety
-    /// Row must be in-bounds
-    pub(crate) unsafe fn move_to_and_forget_missing_unchecked(
+    ///
+    pub(crate) unsafe fn copy_from_unchecked(
         &mut self,
-        row: TableRow,
-        new_table: &mut Table,
-    ) -> TableMoveResult {
-        debug_assert!(row.index() < self.entity_count());
-        let is_last = row.index() == self.entities.len() - 1;
-        let new_row = new_table.allocate(self.entities.swap_remove(row.index()));
-        for (component_id, column) in self.columns.iter_mut() {
-            if let Some(new_column) = new_table.get_column_mut(*component_id) {
-                new_column.initialize_from_unchecked(column, row, new_row);
-            } else {
-                // It's the caller's responsibility to drop these cases.
-                let (_, _) = column.swap_remove_and_forget_unchecked(row);
+        src_table: &mut Table,
+        src_row: TableRow,
+    ) -> TableRow {
+        let entity = src_table.entities()[src_row.0 as usize];
+
+        let dst_row = self.allocate(entity);
+        for (&component_id, dst_column) in self.columns.iter_mut() {
+            if let Some(src_column) = src_table.get_column_mut(component_id) {
+                dst_column.initialize_from_unchecked(dst_row, src_column, src_row)
             }
         }
-        TableMoveResult {
-            new_row,
-            swapped_entity: if is_last {
-                None
-            } else {
-                Some(self.entities[row.index()])
-            },
-        }
+
+        dst_row
     }
 
-    /// Moves the `row` column values to `new_table`, for the columns shared between both tables.
-    /// Returns the index of the new row in `new_table` and the entity in this table swapped in
-    /// to replace it (if an entity was swapped in).
+    /// Moves the component values at `row` to `new_table` and returns the [`TableMoveResult`].
+    ///
+    /// Called when components are inserted.
     ///
     /// # Safety
-    /// row must be in-bounds
-    pub(crate) unsafe fn move_to_and_drop_missing_unchecked(
-        &mut self,
-        row: TableRow,
-        new_table: &mut Table,
-    ) -> TableMoveResult {
-        debug_assert!(row.index() < self.entity_count());
-        let is_last = row.index() == self.entities.len() - 1;
-        let new_row = new_table.allocate(self.entities.swap_remove(row.index()));
-        for (component_id, column) in self.columns.iter_mut() {
-            if let Some(new_column) = new_table.get_column_mut(*component_id) {
-                new_column.initialize_from_unchecked(column, row, new_row);
-            } else {
-                column.swap_remove_unchecked(row);
-            }
-        }
-        TableMoveResult {
-            new_row,
-            swapped_entity: if is_last {
-                None
-            } else {
-                Some(self.entities[row.index()])
-            },
-        }
-    }
-
-    /// Moves the `row` column values to `new_table`, for the columns shared between both tables.
-    /// Returns the index of the new row in `new_table` and the entity in this table swapped in
-    /// to replace it (if an entity was swapped in).
-    ///
-    /// # Safety
-    /// `row` must be in-bounds. `new_table` must contain every component this table has
+    /// - `row` must be in-bounds.
+    /// - `new_table` must have a superset of the components this table has.
     pub(crate) unsafe fn move_to_superset_unchecked(
         &mut self,
         row: TableRow,
         new_table: &mut Table,
     ) -> TableMoveResult {
-        debug_assert!(row.index() < self.entity_count());
-        let is_last = row.index() == self.entities.len() - 1;
-        let new_row = new_table.allocate(self.entities.swap_remove(row.index()));
+        debug_assert!(row.index() < self.rows.len());
+        let is_last = row.index() == self.rows.len() - 1;
+        let new_row = new_table.allocate(self.rows.swap_remove(row.index()));
         for (component_id, column) in self.columns.iter_mut() {
             new_table
                 .get_column_mut(*component_id)
                 .debug_checked_unwrap()
-                .initialize_from_unchecked(column, row, new_row);
+                .initialize_from_unchecked(new_row, column, row);
         }
         TableMoveResult {
-            new_row,
+            table_row: new_row,
             swapped_entity: if is_last {
                 None
             } else {
-                Some(self.entities[row.index()])
+                Some(self.rows[row.index()])
             },
         }
     }
 
-    /// Fetches a read-only reference to the [`Column`] for a given [`Component`] within the
-    /// table.
+    /// Moves the component values at `row` to `new_table`, drops any values of components
+    /// that `new_table` doesn't have, and returns the [`TableMoveResult`].
     ///
-    /// Returns `None` if the corresponding component does not belong to the table.
+    /// Called when components are removed.
     ///
-    /// [`Component`]: crate::component::Component
-    #[inline]
-    pub fn get_column(&self, component_id: ComponentId) -> Option<&Column> {
-        self.columns.get(component_id)
+    /// # Safety
+    /// - `row` must be in-bounds
+    pub(crate) unsafe fn move_to_and_drop_missing_unchecked(
+        &mut self,
+        row: TableRow,
+        new_table: &mut Table,
+    ) -> TableMoveResult {
+        debug_assert!(row.index() < self.rows.len());
+        let is_last = row.index() == self.rows.len() - 1;
+        let new_row = new_table.allocate(self.rows.swap_remove(row.index()));
+        for (component_id, column) in self.columns.iter_mut() {
+            if let Some(new_column) = new_table.get_column_mut(*component_id) {
+                new_column.initialize_from_unchecked(new_row, column, row);
+            } else {
+                column.swap_remove_unchecked(row);
+            }
+        }
+        TableMoveResult {
+            table_row: new_row,
+            swapped_entity: if is_last {
+                None
+            } else {
+                Some(self.rows[row.index()])
+            },
+        }
     }
 
-    /// Fetches a mutable reference to the [`Column`] for a given [`Component`] within the
-    /// table.
+    /// Moves the component values at `row` to `new_table`, leaks any values of components
+    /// that `new_table` doesn't have, and returns the [`TableMoveResult`].
     ///
-    /// Returns `None` if the corresponding component does not belong to the table.
+    /// Called when components are taken.
     ///
-    /// [`Component`]: crate::component::Component
-    #[inline]
-    pub(crate) fn get_column_mut(&mut self, component_id: ComponentId) -> Option<&mut Column> {
-        self.columns.get_mut(component_id)
+    /// # Safety
+    /// - `row` must be in-bounds.
+    /// - The caller is responsible for dropping the leaked values.
+    pub(crate) unsafe fn move_to_and_forget_missing_unchecked(
+        &mut self,
+        row: TableRow,
+        new_table: &mut Table,
+    ) -> TableMoveResult {
+        debug_assert!(row.index() < self.rows.len());
+        let is_last = row.index() == self.rows.len() - 1;
+        let new_row = new_table.allocate(self.rows.swap_remove(row.index()));
+        for (component_id, column) in self.columns.iter_mut() {
+            if let Some(new_column) = new_table.get_column_mut(*component_id) {
+                new_column.initialize_from_unchecked(new_row, column, row);
+            } else {
+                // SAFETY: It's the caller's responsibility to drop these.
+                let (_, _) = column.swap_remove_and_forget_unchecked(row);
+            }
+        }
+        TableMoveResult {
+            table_row: new_row,
+            swapped_entity: if is_last {
+                None
+            } else {
+                Some(self.rows[row.index()])
+            },
+        }
     }
 
-    /// Checks if the table contains a [`Column`] for a given [`Component`].
-    ///
-    /// Returns `true` if the column is present, `false` otherwise.
+    /// Returns `true` if the table contains a [`Column`] for the [`Component`].
     ///
     /// [`Component`]: crate::component::Component
     #[inline]
@@ -710,61 +759,49 @@ impl Table {
         self.columns.contains(component_id)
     }
 
-    /// Reserves `additional` elements worth of capacity within the table.
+    /// Returns a reference to the [`Column`] for the [`Component`], if it exists.
+    ///
+    /// [`Component`]: crate::component::Component
+    #[inline]
+    pub fn get_column(&self, component_id: ComponentId) -> Option<&Column> {
+        self.columns.get(component_id)
+    }
+
+    /// Returns a mutable reference to the [`Column`] for the [`Component`], if it exists.
+    ///
+    /// [`Component`]: crate::component::Component
+    #[inline]
+    pub(crate) fn get_column_mut(&mut self, component_id: ComponentId) -> Option<&mut Column> {
+        self.columns.get_mut(component_id)
+    }
+
+    /// Reserves `additional` rows in the table.
     pub(crate) fn reserve(&mut self, additional: usize) {
-        if self.entities.capacity() - self.entities.len() < additional {
-            self.entities.reserve(additional);
+        if self.rows.capacity() - self.rows.len() < additional {
+            self.rows.reserve(additional);
 
-            // use entities vector capacity as driving capacity for all related allocations
-            let new_capacity = self.entities.capacity();
-
+            // have all columns match the entity vector's capacity
+            let new_capacity = self.rows.capacity();
             for column in self.columns.values_mut() {
                 column.reserve_exact(new_capacity - column.len());
             }
         }
     }
 
-    /// Allocates space for a new entity
+    /// Allocates a row for the entity's data and returns its index.
     ///
     /// # Safety
-    /// the allocated row must be written to immediately with valid values in each column
+    /// The caller must immediately write valid values to the columns in the row.
     pub(crate) unsafe fn allocate(&mut self, entity: Entity) -> TableRow {
         self.reserve(1);
-        let index = self.entities.len();
-        self.entities.push(entity);
+        let index = self.rows.len();
+        self.rows.push(entity);
         for column in self.columns.values_mut() {
-            column.data.set_len(self.entities.len());
+            column.data.set_len(self.rows.len());
             column.added_ticks.push(UnsafeCell::new(Tick::new(0)));
             column.changed_ticks.push(UnsafeCell::new(Tick::new(0)));
         }
         TableRow::new(index)
-    }
-
-    /// Gets the number of entities currently being stored in the table.
-    #[inline]
-    pub fn entity_count(&self) -> usize {
-        self.entities.len()
-    }
-
-    /// Gets the number of components being stored in the table.
-    #[inline]
-    pub fn component_count(&self) -> usize {
-        self.columns.len()
-    }
-
-    /// Gets the maximum number of entities the table can currently store
-    /// without reallocating the underlying memory.
-    #[inline]
-    pub fn entity_capacity(&self) -> usize {
-        self.entities.capacity()
-    }
-
-    /// Checks if the [`Table`] is empty or not.
-    ///
-    /// Returns `true` if the table contains no entities, `false` otherwise.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.entities.is_empty()
     }
 
     pub(crate) fn check_change_ticks(&mut self, change_tick: Tick) {
@@ -773,17 +810,9 @@ impl Table {
         }
     }
 
-    /// Iterates over the [`Column`]s of the [`Table`].
+    /// Iterates over the [`Column`]s of the table.
     pub fn iter(&self) -> impl Iterator<Item = &Column> {
         self.columns.values()
-    }
-
-    /// Clears all of the stored components in the [`Table`].
-    pub(crate) fn clear(&mut self) {
-        self.entities.clear();
-        for column in self.columns.values_mut() {
-            column.clear();
-        }
     }
 }
 
@@ -805,9 +834,13 @@ impl Default for Tables {
     }
 }
 
+/// The result of transferring an entity from one table to another.
+///
+/// Has the row index in the destination table, as well as the entity in that table
+/// whose data was originally stored in that row, if one existed.
 pub(crate) struct TableMoveResult {
+    pub table_row: TableRow,
     pub swapped_entity: Option<Entity>,
-    pub new_row: TableRow,
 }
 
 impl Tables {
@@ -823,7 +856,7 @@ impl Tables {
         self.tables.is_empty()
     }
 
-    /// Fetches a [`Table`] by its [`TableId`].
+    /// Returns a [`Table`] by its [`TableId`].
     ///
     /// Returns `None` if `id` is invalid.
     #[inline]
@@ -831,11 +864,21 @@ impl Tables {
         self.tables.get(id.index())
     }
 
-    /// Fetches mutable references to two different [`Table`]s.
+    /// Returns mutable references to two different [`Table`]s.
     ///
     /// # Panics
     ///
     /// Panics if `a` and `b` are equal.
+    #[inline]
+    pub(crate) fn get_mut(&mut self, id: TableId) -> Option<&mut Table> {
+        self.tables.get_mut(id.index())
+    }
+
+    #[inline]
+    pub(crate) fn remove(&mut self, id: TableId) -> bool {
+        todo!()
+    }
+
     #[inline]
     pub(crate) fn get_2_mut(&mut self, a: TableId, b: TableId) -> (&mut Table, &mut Table) {
         if a.index() > b.index() {
