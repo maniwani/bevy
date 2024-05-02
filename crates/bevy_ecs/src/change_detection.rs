@@ -131,12 +131,6 @@ pub trait DetectChangesMut: DetectChanges {
     /// This is useful to ensure change detection is only triggered when the underlying value
     /// changes, instead of every time it is mutably accessed.
     ///
-    /// If you're dealing with non-trivial structs which have multiple fields of non-trivial size,
-    /// then consider applying a `map_unchanged` beforehand to allow changing only the relevant
-    /// field and prevent unnecessary copying and cloning.
-    /// See the docs of [`Mut::map_unchanged`], [`MutUntyped::map_unchanged`],
-    /// [`ResMut::map_unchanged`] or [`NonSendMut::map_unchanged`] for an example
-    ///
     /// If you need the previous value, use [`replace_if_neq`](DetectChangesMut::replace_if_neq).
     ///
     /// # Examples
@@ -186,12 +180,6 @@ pub trait DetectChangesMut: DetectChanges {
     ///
     /// This is useful to ensure change detection is only triggered when the underlying value
     /// changes, instead of every time it is mutably accessed.
-    ///
-    /// If you're dealing with non-trivial structs which have multiple fields of non-trivial size,
-    /// then consider applying a [`map_unchanged`](Mut::map_unchanged) beforehand to allow
-    /// changing only the relevant field and prevent unnecessary copying and cloning.
-    /// See the docs of [`Mut::map_unchanged`], [`MutUntyped::map_unchanged`],
-    /// [`ResMut::map_unchanged`] or [`NonSendMut::map_unchanged`] for an example
     ///
     /// If you don't need the previous value, use [`set_if_neq`](DetectChangesMut::set_if_neq).
     ///
@@ -604,39 +592,6 @@ impl<'w, T: Resource> From<ResMut<'w, T>> for Mut<'w, T> {
     }
 }
 
-/// Unique borrow of a non-[`Send`] resource.
-///
-/// Only [`Send`] resources may be accessed with the [`ResMut`] [`SystemParam`](crate::system::SystemParam). In case that the
-/// resource does not implement `Send`, this `SystemParam` wrapper can be used. This will instruct
-/// the scheduler to instead run the system on the main thread so that it doesn't send the resource
-/// over to another thread.
-///
-/// # Panics
-///
-/// Panics when used as a `SystemParameter` if the resource does not exist.
-///
-/// Use `Option<NonSendMut<T>>` instead if the resource might not always exist.
-pub struct NonSendMut<'w, T: ?Sized + 'static> {
-    pub(crate) value: &'w mut T,
-    pub(crate) ticks: TicksMut<'w>,
-}
-
-change_detection_impl!(NonSendMut<'w, T>, T,);
-change_detection_mut_impl!(NonSendMut<'w, T>, T,);
-impl_methods!(NonSendMut<'w, T>, T,);
-impl_debug!(NonSendMut<'w, T>,);
-
-impl<'w, T: 'static> From<NonSendMut<'w, T>> for Mut<'w, T> {
-    /// Convert this `NonSendMut` into a `Mut`. This allows keeping the change-detection feature of `Mut`
-    /// while losing the specificity of `NonSendMut`.
-    fn from(other: NonSendMut<'w, T>) -> Mut<'w, T> {
-        Mut {
-            value: other.value,
-            ticks: other.ticks,
-        }
-    }
-}
-
 /// Shared borrow of an entity's component with access to change detection.
 /// Similar to [`Mut`] but is immutable and so doesn't require unique access.
 ///
@@ -845,12 +800,6 @@ impl<'w> MutUntyped<'w> {
         }
     }
 
-    /// Returns `true` if this value was changed or mutably dereferenced
-    /// either since a specific change tick.
-    pub fn has_changed_since(&self, tick: Tick) -> bool {
-        self.ticks.changed.is_newer_than(tick, self.ticks.this_run)
-    }
-
     /// Returns a pointer to the value without taking ownership of this smart pointer, marking it as changed.
     ///
     /// In order to avoid marking the value as changed, you need to call [`bypass_change_detection`](DetectChangesMut::bypass_change_detection).
@@ -974,9 +923,7 @@ mod tests {
 
     use crate::{
         self as bevy_ecs,
-        change_detection::{
-            Mut, NonSendMut, Ref, ResMut, TicksMut, CHECK_TICK_THRESHOLD, MAX_CHANGE_AGE,
-        },
+        change_detection::{Mut, Ref, ResMut, TicksMut, CHECK_TICK_THRESHOLD, MAX_CHANGE_AGE},
         component::{Component, ComponentTicks, Tick},
         system::{IntoSystem, Query, System},
         world::World,
@@ -1131,31 +1078,6 @@ mod tests {
 
         assert!(!val.is_added());
         assert!(val.is_changed());
-    }
-
-    #[test]
-    fn mut_from_non_send_mut() {
-        let mut component_ticks = ComponentTicks {
-            added: Tick::new(1),
-            changed: Tick::new(2),
-        };
-        let ticks = TicksMut {
-            added: &mut component_ticks.added,
-            changed: &mut component_ticks.changed,
-            last_run: Tick::new(3),
-            this_run: Tick::new(4),
-        };
-        let mut res = R {};
-        let non_send_mut = NonSendMut {
-            value: &mut res,
-            ticks,
-        };
-
-        let into_mut: Mut<R> = non_send_mut.into();
-        assert_eq!(1, into_mut.ticks.added.get());
-        assert_eq!(2, into_mut.ticks.changed.get());
-        assert_eq!(3, into_mut.ticks.last_run.get());
-        assert_eq!(4, into_mut.ticks.this_run.get());
     }
 
     #[test]

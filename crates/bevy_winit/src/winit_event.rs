@@ -1,4 +1,3 @@
-#![allow(deprecated)]
 #![allow(missing_docs)]
 
 use bevy_app::App;
@@ -187,6 +186,16 @@ impl From<TouchInput> for WinitEvent {
 impl From<KeyboardInput> for WinitEvent {
     fn from(e: KeyboardInput) -> Self {
         Self::KeyboardInput(e)
+    }
+}
+
+trait AppSendEvent {
+    fn send(&mut self, event: impl Into<WinitEvent>);
+}
+
+impl AppSendEvent for Vec<WinitEvent> {
+    fn send(&mut self, event: impl Into<WinitEvent>) {
+        self.push(Into::<WinitEvent>::into(event));
     }
 }
 

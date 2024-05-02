@@ -1,19 +1,24 @@
-use crate::{App, InternedAppLabel, Plugin, Plugins, PluginsState, Startup};
+use crate::{App, First, InternedAppLabel, Plugin, Plugins, PluginsState, StateTransition};
 use bevy_ecs::{
-    event::EventRegistry,
     prelude::*,
     schedule::{
-        setup_state_transitions_in_world, FreelyMutableState, InternedScheduleLabel,
-        ScheduleBuildSettings, ScheduleLabel,
+        common_conditions::run_once as run_once_condition, run_enter_schedule,
+        InternedScheduleLabel, ScheduleBuildSettings, ScheduleLabel,
     },
     system::SystemId,
 };
 #[cfg(feature = "trace")]
 use bevy_utils::tracing::info_span;
-use bevy_utils::{HashMap, HashSet};
+use bevy_utils::{default, HashMap, HashSet};
 use std::fmt::Debug;
 
 type ExtractFn = Box<dyn Fn(&mut World, &mut World) + Send>;
+
+#[derive(Default)]
+pub(crate) struct PluginStore {
+    pub(crate) registry: Vec<Box<dyn Plugin>>,
+    pub(crate) names: HashSet<String>,
+}
 
 /// A secondary application with its own [`World`]. These can run independently of each other.
 ///
@@ -61,11 +66,8 @@ type ExtractFn = Box<dyn Fn(&mut World, &mut World) + Send>;
 pub struct SubApp {
     /// The data of this application.
     world: World,
-    /// List of plugins that have been added.
-    pub(crate) plugin_registry: Vec<Box<dyn Plugin>>,
-    /// The names of plugins that have been added to this app. (used to track duplicates and
-    /// already-registered plugins)
-    pub(crate) plugin_names: HashSet<String>,
+    /// Metadata for installed plugins.
+    pub(crate) plugins: PluginStore,
     /// Panics if an update is attempted while plugins are building.
     pub(crate) plugin_build_depth: usize,
     pub(crate) plugins_state: PluginsState,
@@ -88,8 +90,7 @@ impl Default for SubApp {
         world.init_resource::<Schedules>();
         Self {
             world,
-            plugin_registry: Vec::default(),
-            plugin_names: HashSet::default(),
+            plugins: default(),
             plugin_build_depth: 0,
             plugins_state: PluginsState::Adding,
             update_schedule: None,
@@ -317,61 +318,40 @@ impl SubApp {
     }
 
     /// See [`App::init_state`].
-    pub fn init_state<S: FreelyMutableState + FromWorld>(&mut self) -> &mut Self {
+    pub fn init_state<S: States + FromWorld>(&mut self) -> &mut Self {
         if !self.world.contains_resource::<State<S>>() {
-            setup_state_transitions_in_world(&mut self.world, Some(Startup.intern()));
             self.init_resource::<State<S>>()
                 .init_resource::<NextState<S>>()
-                .add_event::<StateTransitionEvent<S>>();
-            let schedule = self.get_schedule_mut(StateTransition).unwrap();
-            S::register_state(schedule);
+                .add_event::<StateTransitionEvent<S>>()
+                .add_systems(
+                    StateTransition,
+                    (
+                        run_enter_schedule::<S>.run_if(run_once_condition()),
+                        apply_state_transition::<S>,
+                    )
+                        .chain(),
+                );
         }
 
+        // The OnEnter, OnExit, and OnTransition schedules are lazily initialized
+        // (i.e. when the first system is added to them), so World::try_run_schedule
+        // is used to fail gracefully if they aren't present.
         self
     }
 
     /// See [`App::insert_state`].
-    pub fn insert_state<S: FreelyMutableState>(&mut self, state: S) -> &mut Self {
-        if !self.world.contains_resource::<State<S>>() {
-            setup_state_transitions_in_world(&mut self.world, Some(Startup.intern()));
-            self.insert_resource::<State<S>>(State::new(state))
-                .init_resource::<NextState<S>>()
-                .add_event::<StateTransitionEvent<S>>();
-
-            let schedule = self.get_schedule_mut(StateTransition).unwrap();
-            S::register_state(schedule);
-        }
-
-        self
-    }
-
-    /// See [`App::add_computed_state`].
-    pub fn add_computed_state<S: ComputedStates>(&mut self) -> &mut Self {
-        if !self
-            .world
-            .contains_resource::<Events<StateTransitionEvent<S>>>()
-        {
-            setup_state_transitions_in_world(&mut self.world, Some(Startup.intern()));
-            self.add_event::<StateTransitionEvent<S>>();
-            let schedule = self.get_schedule_mut(StateTransition).unwrap();
-            S::register_computed_state_systems(schedule);
-        }
-
-        self
-    }
-
-    /// See [`App::add_sub_state`].
-    pub fn add_sub_state<S: SubStates>(&mut self) -> &mut Self {
-        if !self
-            .world
-            .contains_resource::<Events<StateTransitionEvent<S>>>()
-        {
-            setup_state_transitions_in_world(&mut self.world, Some(Startup.intern()));
-            self.init_resource::<NextState<S>>();
-            self.add_event::<StateTransitionEvent<S>>();
-            let schedule = self.get_schedule_mut(StateTransition).unwrap();
-            S::register_sub_state_systems(schedule);
-        }
+    pub fn insert_state<S: States>(&mut self, state: S) -> &mut Self {
+        self.insert_resource(State::new(state))
+            .init_resource::<NextState<S>>()
+            .add_event::<StateTransitionEvent<S>>()
+            .add_systems(
+                StateTransition,
+                (
+                    run_enter_schedule::<S>.run_if(run_once_condition()),
+                    apply_state_transition::<S>,
+                )
+                    .chain(),
+            );
 
         self
     }
@@ -382,7 +362,12 @@ impl SubApp {
         T: Event,
     {
         if !self.world.contains_resource::<Events<T>>() {
-            EventRegistry::register_event::<T>(self.world_mut());
+            self.init_resource::<Events<T>>().add_systems(
+                First,
+                bevy_ecs::event::event_update_system::<T>
+                    .in_set(bevy_ecs::event::EventUpdates)
+                    .run_if(bevy_ecs::event::event_update_condition::<T>),
+            );
         }
 
         self
@@ -399,7 +384,10 @@ impl SubApp {
     where
         T: Plugin,
     {
-        self.plugin_names.contains(std::any::type_name::<T>())
+        self.plugins
+            .registry
+            .iter()
+            .any(|p| p.downcast_ref::<T>().is_some())
     }
 
     /// See [`App::get_added_plugins`].
@@ -407,7 +395,8 @@ impl SubApp {
     where
         T: Plugin,
     {
-        self.plugin_registry
+        self.plugins
+            .registry
             .iter()
             .filter_map(|p| p.downcast_ref())
             .collect()
@@ -424,16 +413,16 @@ impl SubApp {
         match self.plugins_state {
             PluginsState::Adding => {
                 let mut state = PluginsState::Ready;
-                let plugins = std::mem::take(&mut self.plugin_registry);
+                let plugins = std::mem::take(&mut self.plugins);
                 self.run_as_app(|app| {
-                    for plugin in &plugins {
+                    for plugin in &plugins.registry {
                         if !plugin.ready(app) {
                             state = PluginsState::Adding;
                             return;
                         }
                     }
                 });
-                self.plugin_registry = plugins;
+                self.plugins = plugins;
                 state
             }
             state => state,
@@ -442,25 +431,25 @@ impl SubApp {
 
     /// Runs [`Plugin::finish`] for each plugin.
     pub fn finish(&mut self) {
-        let plugins = std::mem::take(&mut self.plugin_registry);
+        let plugins = std::mem::take(&mut self.plugins);
         self.run_as_app(|app| {
-            for plugin in &plugins {
+            for plugin in &plugins.registry {
                 plugin.finish(app);
             }
         });
-        self.plugin_registry = plugins;
+        self.plugins = plugins;
         self.plugins_state = PluginsState::Finished;
     }
 
     /// Runs [`Plugin::cleanup`] for each plugin.
     pub fn cleanup(&mut self) {
-        let plugins = std::mem::take(&mut self.plugin_registry);
+        let plugins = std::mem::take(&mut self.plugins);
         self.run_as_app(|app| {
-            for plugin in &plugins {
+            for plugin in &plugins.registry {
                 plugin.cleanup(app);
             }
         });
-        self.plugin_registry = plugins;
+        self.plugins = plugins;
         self.plugins_state = PluginsState::Cleaned;
     }
 
@@ -490,20 +479,27 @@ impl SubApp {
 #[derive(Default)]
 pub struct SubApps {
     /// The primary sub-app that contains the "main" world.
-    pub main: SubApp,
+    pub main: Box<SubApp>,
     /// Other, labeled sub-apps.
     pub sub_apps: HashMap<InternedAppLabel, SubApp>,
 }
 
 impl SubApps {
+    pub(crate) fn new() -> Self {
+        Self {
+            main: Box::new(SubApp::new()),
+            sub_apps: HashMap::new(),
+        }
+    }
+
     /// Calls [`update`](SubApp::update) for the main sub-app, and then calls
     /// [`extract`](SubApp::extract) and [`update`](SubApp::update) for the rest.
     pub fn update(&mut self) {
         #[cfg(feature = "trace")]
-        let _bevy_update_span = info_span!("update").entered();
+        let _bevy_update_span = info_span!("SubApps::update").entered();
         {
             #[cfg(feature = "trace")]
-            let _bevy_frame_update_span = info_span!("main app").entered();
+            let _bevy_frame_update_span = info_span!("sub app", name = "Main").entered();
             self.main.update();
         }
         for (_label, sub_app) in self.sub_apps.iter_mut() {
@@ -518,11 +514,11 @@ impl SubApps {
 
     /// Returns an iterator over the sub-apps (starting with the main one).
     pub fn iter(&self) -> impl Iterator<Item = &SubApp> + '_ {
-        std::iter::once(&self.main).chain(self.sub_apps.values())
+        std::iter::once(self.main.as_ref()).chain(self.sub_apps.values())
     }
 
     /// Returns a mutable iterator over the sub-apps (starting with the main one).
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut SubApp> + '_ {
-        std::iter::once(&mut self.main).chain(self.sub_apps.values_mut())
+        std::iter::once(self.main.as_mut()).chain(self.sub_apps.values_mut())
     }
 }

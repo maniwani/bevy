@@ -355,48 +355,6 @@ impl<'w> UnsafeWorldCell<'w> {
             .get_data()
     }
 
-    /// Gets a reference to the non-send resource of the given type if it exists
-    ///
-    /// # Safety
-    /// It is the callers responsibility to ensure that
-    /// - the [`UnsafeWorldCell`] has permission to access the resource
-    /// - no mutable reference to the resource exists at the same time
-    #[inline]
-    pub unsafe fn get_non_send_resource<R: 'static>(self) -> Option<&'w R> {
-        let component_id = self.components().get_resource_id(TypeId::of::<R>())?;
-        // SAFETY: caller ensures that `self` has permission to access `R`
-        //  caller ensures that no mutable reference exists to `R`
-        unsafe {
-            self.get_non_send_resource_by_id(component_id)
-                // SAFETY: `component_id` was obtained from `TypeId::of::<R>()`
-                .map(|ptr| ptr.deref::<R>())
-        }
-    }
-
-    /// Gets a `!Send` resource to the resource with the id [`ComponentId`] if it exists.
-    /// The returned pointer must not be used to modify the resource, and must not be
-    /// dereferenced after the immutable borrow of the [`World`] ends.
-    ///
-    /// **You should prefer to use the typed API [`UnsafeWorldCell::get_non_send_resource`] where possible and only
-    /// use this in cases where the actual types are not known at compile time.**
-    ///
-    /// # Panics
-    /// This function will panic if it isn't called from the same thread that the resource was inserted from.
-    ///
-    /// # Safety
-    /// It is the callers responsibility to ensure that
-    /// - the [`UnsafeWorldCell`] has permission to access the resource
-    /// - no mutable reference to the resource exists at the same time
-    #[inline]
-    pub unsafe fn get_non_send_resource_by_id(self, component_id: ComponentId) -> Option<Ptr<'w>> {
-        // SAFETY: we only access data on world that the caller has ensured is unaliased and we have
-        //  permission to access.
-        unsafe { self.storages() }
-            .non_send_resources
-            .get(component_id)?
-            .get_data()
-    }
-
     /// Gets a mutable reference to the resource of the given type if it exists
     ///
     /// # Safety
@@ -455,65 +413,6 @@ impl<'w> UnsafeWorldCell<'w> {
         })
     }
 
-    /// Gets a mutable reference to the non-send resource of the given type if it exists
-    ///
-    /// # Safety
-    /// It is the callers responsibility to ensure that
-    /// - the [`UnsafeWorldCell`] has permission to access the resource mutably
-    /// - no other references to the resource exist at the same time
-    #[inline]
-    pub unsafe fn get_non_send_resource_mut<R: 'static>(self) -> Option<Mut<'w, R>> {
-        let component_id = self.components().get_resource_id(TypeId::of::<R>())?;
-        // SAFETY:
-        // - caller ensures that `self` has permission to access the resource
-        // - caller ensures that the resource is unaliased
-        unsafe {
-            self.get_non_send_resource_mut_by_id(component_id)
-                // SAFETY: `component_id` was gotten by `TypeId::of::<R>()`
-                .map(|ptr| ptr.with_type::<R>())
-        }
-    }
-
-    /// Gets a `!Send` resource to the resource with the id [`ComponentId`] if it exists.
-    /// The returned pointer may be used to modify the resource, as long as the mutable borrow
-    /// of the [`World`] is still valid.
-    ///
-    /// **You should prefer to use the typed API [`UnsafeWorldCell::get_non_send_resource_mut`] where possible and only
-    /// use this in cases where the actual types are not known at compile time.**
-    ///
-    /// # Panics
-    /// This function will panic if it isn't called from the same thread that the resource was inserted from.
-    ///
-    /// # Safety
-    /// It is the callers responsibility to ensure that
-    /// - the [`UnsafeWorldCell`] has permission to access the resource mutably
-    /// - no other references to the resource exist at the same time
-    #[inline]
-    pub unsafe fn get_non_send_resource_mut_by_id(
-        self,
-        component_id: ComponentId,
-    ) -> Option<MutUntyped<'w>> {
-        let change_tick = self.change_tick();
-        // SAFETY: we only access data that the caller has ensured is unaliased and `self`
-        //  has permission to access.
-        let (ptr, ticks) = unsafe { self.storages() }
-            .non_send_resources
-            .get(component_id)?
-            .get_with_ticks()?;
-
-        let ticks =
-            // SAFETY: This function has exclusive access to the world so nothing aliases `ticks`.
-            // - index is in-bounds because the column is initialized and non-empty
-            // - no other reference to the ticks of the same row can exist at the same time
-            unsafe { TicksMut::from_tick_cells(ticks, self.last_change_tick(), change_tick) };
-
-        Some(MutUntyped {
-            // SAFETY: This function has exclusive access to the world so nothing aliases `ptr`.
-            value: unsafe { ptr.assert_unique() },
-            ticks,
-        })
-    }
-
     // Shorthand helper function for getting the data and change ticks for a resource.
     ///
     /// # Safety
@@ -531,30 +430,6 @@ impl<'w> UnsafeWorldCell<'w> {
         // - caller ensures that we have permission to access this resource
         unsafe { self.storages() }
             .resources
-            .get(component_id)?
-            .get_with_ticks()
-    }
-
-    // Shorthand helper function for getting the data and change ticks for a resource.
-    ///
-    /// # Panics
-    /// This function will panic if it isn't called from the same thread that the resource was inserted from.
-    ///
-    /// # Safety
-    /// It is the callers responsibility to ensure that
-    /// - the [`UnsafeWorldCell`] has permission to access the resource mutably
-    /// - no mutable references to the resource exist at the same time
-    #[inline]
-    pub(crate) unsafe fn get_non_send_with_ticks(
-        self,
-        component_id: ComponentId,
-    ) -> Option<(Ptr<'w>, TickCells<'w>)> {
-        // SAFETY:
-        // - caller ensures there is no `&mut World`
-        // - caller ensures there are no mutable borrows of this resource
-        // - caller ensures that we have permission to access this resource
-        unsafe { self.storages() }
-            .non_send_resources
             .get(component_id)?
             .get_with_ticks()
     }

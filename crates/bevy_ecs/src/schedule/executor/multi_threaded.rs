@@ -1,6 +1,7 @@
 use std::{
     any::Any,
-    sync::{Arc, Mutex, MutexGuard},
+    panic::AssertUnwindSafe,
+    sync::{Arc, Mutex},
 };
 
 use bevy_tasks::{ComputeTaskPool, Scope, TaskPool, ThreadExecutor};
@@ -8,7 +9,6 @@ use bevy_utils::default;
 use bevy_utils::syncunsafecell::SyncUnsafeCell;
 #[cfg(feature = "trace")]
 use bevy_utils::tracing::{info_span, Span};
-use std::panic::AssertUnwindSafe;
 
 use concurrent_queue::ConcurrentQueue;
 use fixedbitset::FixedBitSet;
@@ -30,7 +30,7 @@ use super::__rust_begin_short_backtrace;
 struct Environment<'env, 'sys> {
     executor: &'env MultiThreadedExecutor,
     systems: &'sys [SyncUnsafeCell<BoxedSystem>],
-    conditions: SyncUnsafeCell<Conditions<'sys>>,
+    conditions: Mutex<Conditions<'sys>>,
     world_cell: UnsafeWorldCell<'env>,
 }
 
@@ -50,7 +50,7 @@ impl<'env, 'sys> Environment<'env, 'sys> {
         Environment {
             executor,
             systems: SyncUnsafeCell::from_mut(schedule.systems.as_mut_slice()).as_slice_of_cells(),
-            conditions: SyncUnsafeCell::new(Conditions {
+            conditions: Mutex::new(Conditions {
                 system_conditions: &mut schedule.system_conditions,
                 set_conditions: &mut schedule.set_conditions,
                 sets_with_conditions_of_systems: &schedule.sets_with_conditions_of_systems,
@@ -68,15 +68,17 @@ struct SystemTaskMetadata {
     archetype_component_access: Access<ArchetypeComponentId>,
     /// Indices of the systems that directly depend on the system.
     dependents: Vec<usize>,
-    /// Is `true` if the system does not access `!Send` data.
-    is_send: bool,
     /// Is `true` if the system is exclusive.
     is_exclusive: bool,
+    /// Cached tracing span for system task
+    #[cfg(feature = "trace")]
+    system_task_span: Span,
 }
 
 /// The result of running a system that is sent across a channel.
 struct SystemResult {
     system_index: usize,
+    success: bool,
 }
 
 /// Runs the schedule using a thread pool. Non-conflicting systems can run in parallel.
@@ -89,7 +91,6 @@ pub struct MultiThreadedExecutor {
     apply_final_deferred: bool,
     /// When set, tells the executor that a thread has panicked.
     panic_payload: Mutex<Option<Box<dyn Any + Send>>>,
-    starting_systems: FixedBitSet,
     /// Cached tracing span
     #[cfg(feature = "trace")]
     executor_span: Span,
@@ -101,12 +102,14 @@ pub struct ExecutorState {
     system_task_metadata: Vec<SystemTaskMetadata>,
     /// Union of the accesses of all currently running systems.
     active_access: Access<ArchetypeComponentId>,
-    /// Returns `true` if a system with non-`Send` access is running.
-    local_thread_running: bool,
     /// Returns `true` if an exclusive system is running.
     exclusive_running: bool,
+    /// The number of systems expected to run.
+    num_systems: usize,
     /// The number of systems that are running.
     num_running_systems: usize,
+    /// The number of systems that have completed.
+    num_completed_systems: usize,
     /// The number of dependencies each system has that have not completed.
     num_dependencies_remaining: Vec<usize>,
     /// System sets whose conditions have been evaluated.
@@ -123,6 +126,8 @@ pub struct ExecutorState {
     completed_systems: FixedBitSet,
     /// Systems that have run but have not had their buffers applied.
     unapplied_systems: FixedBitSet,
+    /// When set, stops the executor from running any more systems.
+    stop_spawning: bool,
 }
 
 /// References to data required by the executor.
@@ -153,7 +158,6 @@ impl SystemExecutor for MultiThreadedExecutor {
         let set_count = schedule.set_ids.len();
 
         self.system_completion = ConcurrentQueue::bounded(sys_count.max(1));
-        self.starting_systems = FixedBitSet::with_capacity(sys_count);
         state.evaluated_sets = FixedBitSet::with_capacity(set_count);
         state.ready_systems = FixedBitSet::with_capacity(sys_count);
         state.ready_systems_copy = FixedBitSet::with_capacity(sys_count);
@@ -167,12 +171,13 @@ impl SystemExecutor for MultiThreadedExecutor {
             state.system_task_metadata.push(SystemTaskMetadata {
                 archetype_component_access: default(),
                 dependents: schedule.system_dependents[index].clone(),
-                is_send: schedule.systems[index].is_send(),
                 is_exclusive: schedule.systems[index].is_exclusive(),
+                #[cfg(feature = "trace")]
+                system_task_span: info_span!(
+                    "system_task",
+                    name = &*schedule.systems[index].name()
+                ),
             });
-            if schedule.system_dependencies[index] == 0 {
-                self.starting_systems.insert(index);
-            }
         }
 
         state.num_dependencies_remaining = Vec::with_capacity(sys_count);
@@ -186,14 +191,23 @@ impl SystemExecutor for MultiThreadedExecutor {
     ) {
         let state = self.state.get_mut().unwrap();
         // reset counts
-        if schedule.systems.is_empty() {
+        state.num_systems = schedule.systems.len();
+        if state.num_systems == 0 {
             return;
         }
         state.num_running_systems = 0;
+        state.num_completed_systems = 0;
+        state.num_dependencies_remaining.clear();
         state
             .num_dependencies_remaining
-            .clone_from(&schedule.system_dependencies);
-        state.ready_systems.clone_from(&self.starting_systems);
+            .extend_from_slice(&schedule.system_dependencies);
+
+        for (system_index, dependencies) in state.num_dependencies_remaining.iter_mut().enumerate()
+        {
+            if *dependencies == 0 {
+                state.ready_systems.insert(system_index);
+            }
+        }
 
         // If stepping is enabled, make sure we skip those systems that should
         // not be run.
@@ -202,12 +216,13 @@ impl SystemExecutor for MultiThreadedExecutor {
             debug_assert_eq!(skipped_systems.len(), state.completed_systems.len());
             // mark skipped systems as completed
             state.completed_systems |= skipped_systems;
+            state.num_completed_systems = state.completed_systems.count_ones(..);
 
             // signal the dependencies for each of the skipped systems, as
             // though they had run
             for system_index in skipped_systems.ones() {
                 state.signal_dependents(system_index);
-                state.ready_systems.remove(system_index);
+                state.ready_systems.set(system_index, false);
             }
         }
 
@@ -239,14 +254,15 @@ impl SystemExecutor for MultiThreadedExecutor {
             // Commands should be applied while on the scope's thread, not the executor's thread
             let res = apply_deferred(&state.unapplied_systems, systems, world);
             if let Err(payload) = res {
-                let panic_payload = self.panic_payload.get_mut().unwrap();
+                let mut panic_payload = self.panic_payload.lock().unwrap();
                 *panic_payload = Some(payload);
             }
             state.unapplied_systems.clear();
+            debug_assert!(state.unapplied_systems.is_clear());
         }
 
         // check to see if there was a panic
-        let payload = self.panic_payload.get_mut().unwrap();
+        let mut payload = self.panic_payload.lock().unwrap();
         if let Some(payload) = payload.take() {
             std::panic::resume_unwind(payload);
         }
@@ -275,7 +291,10 @@ impl<'scope, 'env: 'scope, 'sys> Context<'scope, 'env, 'sys> {
         self.environment
             .executor
             .system_completion
-            .push(SystemResult { system_index })
+            .push(SystemResult {
+                system_index,
+                success: res.is_ok(),
+            })
             .unwrap_or_else(|error| unreachable!("{}", error));
         if let Err(payload) = res {
             eprintln!("Encountered a panic in system `{}`!", &*system.name());
@@ -288,14 +307,6 @@ impl<'scope, 'env: 'scope, 'sys> Context<'scope, 'env, 'sys> {
         self.tick_executor();
     }
 
-    fn try_lock<'a>(&'a self) -> Option<(&'a mut Conditions<'sys>, MutexGuard<'a, ExecutorState>)> {
-        let guard = self.environment.executor.state.try_lock().ok()?;
-        // SAFETY: This is an exclusive access as no other location fetches conditions mutably, and
-        // is synchronized by the lock on the executor state.
-        let conditions = unsafe { &mut *self.environment.conditions.get() };
-        Some((conditions, guard))
-    }
-
     fn tick_executor(&self) {
         // Ensure that the executor handles any events pushed to the system_completion queue by this thread.
         // If this thread acquires the lock, the exector runs after the push() and they are processed.
@@ -303,10 +314,10 @@ impl<'scope, 'env: 'scope, 'sys> Context<'scope, 'env, 'sys> {
         // after the lock is released, which is after try_lock() failed, which is after the push()
         // on this thread, so the is_empty() check will see the new events and loop.
         loop {
-            let Some((conditions, mut guard)) = self.try_lock() else {
+            let Ok(mut guard) = self.environment.executor.state.try_lock() else {
                 return;
             };
-            guard.tick(self, conditions);
+            guard.tick(self);
             // Make sure we drop the guard before checking system_completion.is_empty(), or we could lose events.
             drop(guard);
             if self.environment.executor.system_completion.is_empty() {
@@ -324,7 +335,6 @@ impl MultiThreadedExecutor {
         Self {
             state: Mutex::new(ExecutorState::new()),
             system_completion: ConcurrentQueue::unbounded(),
-            starting_systems: FixedBitSet::new(),
             apply_final_deferred: true,
             panic_payload: Mutex::new(None),
             #[cfg(feature = "trace")]
@@ -337,10 +347,11 @@ impl ExecutorState {
     fn new() -> Self {
         Self {
             system_task_metadata: Vec::new(),
+            num_systems: 0,
             num_running_systems: 0,
+            num_completed_systems: 0,
             num_dependencies_remaining: Vec::new(),
             active_access: default(),
-            local_thread_running: false,
             exclusive_running: false,
             evaluated_sets: FixedBitSet::new(),
             ready_systems: FixedBitSet::new(),
@@ -349,10 +360,11 @@ impl ExecutorState {
             skipped_systems: FixedBitSet::new(),
             completed_systems: FixedBitSet::new(),
             unapplied_systems: FixedBitSet::new(),
+            stop_spawning: false,
         }
     }
 
-    fn tick(&mut self, context: &Context, conditions: &mut Conditions) {
+    fn tick(&mut self, context: &Context) {
         #[cfg(feature = "trace")]
         let _span = context.environment.executor.executor_span.enter();
 
@@ -366,7 +378,7 @@ impl ExecutorState {
         // - `finish_system_and_handle_dependents` has updated the currently running systems.
         // - `rebuild_active_access` locks access for all currently running systems.
         unsafe {
-            self.spawn_system_tasks(context, conditions);
+            self.spawn_system_tasks(context);
         }
     }
 
@@ -375,10 +387,16 @@ impl ExecutorState {
     ///   have been mutably borrowed (such as the systems currently running).
     /// - `world_cell` must have permission to access all world data (not counting
     ///   any world data that is claimed by systems currently running on this executor).
-    unsafe fn spawn_system_tasks(&mut self, context: &Context, conditions: &mut Conditions) {
+    unsafe fn spawn_system_tasks(&mut self, context: &Context) {
         if self.exclusive_running {
             return;
         }
+
+        let mut conditions = context
+            .environment
+            .conditions
+            .try_lock()
+            .expect("Conditions should only be locked while owning the executor state");
 
         // can't borrow since loop mutably borrows `self`
         let mut ready_systems = std::mem::take(&mut self.ready_systems_copy);
@@ -389,10 +407,11 @@ impl ExecutorState {
         while check_for_new_ready_systems {
             check_for_new_ready_systems = false;
 
-            ready_systems.clone_from(&self.ready_systems);
+            ready_systems.clear();
+            ready_systems.union_with(&self.ready_systems);
 
             for system_index in ready_systems.ones() {
-                debug_assert!(!self.running_systems.contains(system_index));
+                assert!(!self.running_systems.contains(system_index));
                 // SAFETY: Caller assured that these systems are not running.
                 // Therefore, no other reference to this system exists and there is no aliasing.
                 let system = unsafe { &mut *context.environment.systems[system_index].get() };
@@ -400,7 +419,7 @@ impl ExecutorState {
                 if !self.can_run(
                     system_index,
                     system,
-                    conditions,
+                    &mut conditions,
                     context.environment.world_cell,
                 ) {
                     // NOTE: exclusive systems with ambiguities are susceptible to
@@ -410,7 +429,7 @@ impl ExecutorState {
                     continue;
                 }
 
-                self.ready_systems.remove(system_index);
+                self.ready_systems.set(system_index, false);
 
                 // SAFETY: `can_run` returned true, which means that:
                 // - It must have called `update_archetype_component_access` for each run condition.
@@ -419,7 +438,7 @@ impl ExecutorState {
                     !self.should_run(
                         system_index,
                         system,
-                        conditions,
+                        &mut conditions,
                         context.environment.world_cell,
                     )
                 } {
@@ -468,10 +487,6 @@ impl ExecutorState {
             return false;
         }
 
-        if !system_meta.is_send && self.local_thread_running {
-            return false;
-        }
-
         // TODO: an earlier out if world's archetypes did not change
         for set_idx in conditions.sets_with_conditions_of_systems[system_index]
             .difference(&self.evaluated_sets)
@@ -506,9 +521,11 @@ impl ExecutorState {
                 return false;
             }
 
-            self.system_task_metadata[system_index]
-                .archetype_component_access
-                .clone_from(system.archetype_component_access());
+            // PERF: use an optimized clear() + extend() operation
+            let meta_access =
+                &mut self.system_task_metadata[system_index].archetype_component_access;
+            meta_access.clear();
+            meta_access.extend(system.archetype_component_access());
         }
 
         true
@@ -583,8 +600,12 @@ impl ExecutorState {
 
         let system_meta = &self.system_task_metadata[system_index];
 
+        #[cfg(feature = "trace")]
+        let system_span = system_meta.system_task_span.clone();
         let task = async move {
             let res = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                #[cfg(feature = "trace")]
+                let _span = system_span.enter();
                 // SAFETY:
                 // - The caller ensures that we have permission to
                 // access the world data used by the system.
@@ -602,12 +623,7 @@ impl ExecutorState {
         self.active_access
             .extend(&system_meta.archetype_component_access);
 
-        if system_meta.is_send {
-            context.scope.spawn(task);
-        } else {
-            self.local_thread_running = true;
-            context.scope.spawn_on_external(task);
-        }
+        context.scope.spawn(task);
     }
 
     /// # Safety
@@ -620,53 +636,67 @@ impl ExecutorState {
         let system = unsafe { &mut *context.environment.systems[system_index].get() };
         // Move the full context object into the new future.
         let context = *context;
+        #[cfg(feature = "trace")]
+        let system_span = self.system_task_metadata[system_index]
+            .system_task_span
+            .clone();
 
         if is_apply_deferred(system) {
             // TODO: avoid allocation
             let unapplied_systems = self.unapplied_systems.clone();
             self.unapplied_systems.clear();
             let task = async move {
-                let res = apply_deferred(&unapplied_systems, context.environment.systems, world);
+                let res = {
+                    #[cfg(feature = "trace")]
+                    let _span = system_span.enter();
+                    apply_deferred(&unapplied_systems, context.environment.systems, world)
+                };
                 context.system_completed(system_index, res, system);
             };
 
-            context.scope.spawn_on_scope(task);
+            context.scope.spawn(task);
         } else {
             let task = async move {
                 let res = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    #[cfg(feature = "trace")]
+                    let _span = system_span.enter();
                     __rust_begin_short_backtrace::run(&mut **system, world);
                 }));
                 context.system_completed(system_index, res, system);
             };
 
-            context.scope.spawn_on_scope(task);
+            context.scope.spawn(task);
         }
 
         self.exclusive_running = true;
-        self.local_thread_running = true;
     }
 
     fn finish_system_and_handle_dependents(&mut self, result: SystemResult) {
-        let SystemResult { system_index, .. } = result;
+        let SystemResult {
+            system_index,
+            success,
+        } = result;
 
         if self.system_task_metadata[system_index].is_exclusive {
             self.exclusive_running = false;
         }
 
-        if !self.system_task_metadata[system_index].is_send {
-            self.local_thread_running = false;
-        }
-
         debug_assert!(self.num_running_systems >= 1);
         self.num_running_systems -= 1;
-        self.running_systems.remove(system_index);
+        self.num_completed_systems += 1;
+        self.running_systems.set(system_index, false);
         self.completed_systems.insert(system_index);
         self.unapplied_systems.insert(system_index);
 
         self.signal_dependents(system_index);
+
+        if !success {
+            self.stop_spawning_systems();
+        }
     }
 
     fn skip_system_and_signal_dependents(&mut self, system_index: usize) {
+        self.num_completed_systems += 1;
         self.completed_systems.insert(system_index);
         self.signal_dependents(system_index);
     }
@@ -679,6 +709,13 @@ impl ExecutorState {
             if *remaining == 0 && !self.completed_systems.contains(dep_idx) {
                 self.ready_systems.insert(dep_idx);
             }
+        }
+    }
+
+    fn stop_spawning_systems(&mut self) {
+        if !self.stop_spawning {
+            self.num_systems = self.num_completed_systems + self.num_running_systems;
+            self.stop_spawning = true;
         }
     }
 

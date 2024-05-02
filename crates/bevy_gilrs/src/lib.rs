@@ -22,8 +22,21 @@ use gilrs::GilrsBuilder;
 use gilrs_system::{gilrs_event_startup_system, gilrs_event_system};
 use rumble::{play_gilrs_rumble, RunningRumbleEffects};
 
-#[cfg_attr(not(target_arch = "wasm32"), derive(Resource))]
-pub(crate) struct Gilrs(pub SyncCell<gilrs::Gilrs>);
+// TODO: This can be a normal resource on all targets except WASM.
+/// An instance of [`gilrs::Gilrs`].
+#[derive(ThreadLocalResource)]
+pub struct Gilrs(gilrs::Gilrs);
+impl std::ops::Deref for Gilrs {
+    type Target = gilrs::Gilrs;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for Gilrs {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// Plugin that provides gamepad handling to an [`App`].
 #[derive(Default)]
@@ -41,12 +54,8 @@ impl Plugin for GilrsPlugin {
             .build()
         {
             Ok(gilrs) => {
-                #[cfg(target_arch = "wasm32")]
-                app.insert_non_send_resource(Gilrs(SyncCell::new(gilrs)));
-                #[cfg(not(target_arch = "wasm32"))]
-                app.insert_resource(Gilrs(SyncCell::new(gilrs)));
-
-                app.init_resource::<RunningRumbleEffects>()
+                app.insert_non_send_resource(crate::Gilrs(gilrs))
+                    .init_non_send_resource::<RunningRumbleEffects>()
                     .add_systems(PreStartup, gilrs_event_startup_system)
                     .add_systems(PreUpdate, gilrs_event_system.before(InputSystem))
                     .add_systems(PostUpdate, play_gilrs_rumble.in_set(RumbleSystem));

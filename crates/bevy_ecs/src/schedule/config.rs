@@ -7,17 +7,11 @@ use crate::{
         set::{InternedSystemSet, IntoSystemSet, SystemSet},
         Chain,
     },
-    system::{BoxedSystem, IntoSystem, System},
+    system::{BoxedSystem, IntoSystem},
 };
 
 fn new_condition<M>(condition: impl Condition<M>) -> BoxedCondition {
     let condition_system = IntoSystem::into_system(condition);
-    assert!(
-        condition_system.is_send(),
-        "Condition `{}` accesses `NonSend` resources. This is not currently supported.",
-        condition_system.name()
-    );
-
     Box::new(condition_system)
 }
 
@@ -48,15 +42,9 @@ impl IntoSystemConfigs<()> for BoxedSystem<(), ()> {
     }
 }
 
-/// Stores configuration for a single generic node (a system or a system set)
-///
-/// The configuration includes the node itself, scheduling metadata
-/// (hierarchy: in which sets is the node contained,
-/// dependencies: before/after which other nodes should this node run)
-/// and the run conditions associated with this node.
+/// Stores configuration for a single generic node.
 pub struct NodeConfig<T> {
     pub(crate) node: T,
-    /// Hierarchy and dependency metadata for this node
     pub(crate) graph_info: GraphInfo,
     pub(crate) conditions: Vec<BoxedCondition>,
 }
@@ -89,7 +77,7 @@ impl SystemConfigs {
         Self::NodeConfig(SystemConfig {
             node: system,
             graph_info: GraphInfo {
-                hierarchy: sets,
+                sets,
                 ..Default::default()
             },
             conditions: Vec::new(),
@@ -102,7 +90,7 @@ impl<T> NodeConfigs<T> {
     pub fn in_set_inner(&mut self, set: InternedSystemSet) {
         match self {
             Self::NodeConfig(config) => {
-                config.graph_info.hierarchy.push(set);
+                config.graph_info.sets.push(set);
             }
             Self::Configs { configs, .. } => {
                 for config in configs {

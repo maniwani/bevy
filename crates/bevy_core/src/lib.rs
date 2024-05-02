@@ -58,16 +58,15 @@ impl Plugin for TaskPoolPlugin {
         _app.add_systems(Last, tick_global_task_pools);
     }
 }
-/// A dummy type that is [`!Send`](Send), to force systems to run on the main thread.
-pub struct NonSendMarker(PhantomData<*mut ()>);
 
 /// A system used to check and advanced our task pools.
 ///
-/// Calls [`tick_global_task_pools_on_main_thread`],
-/// and uses [`NonSendMarker`] to ensure that this system runs on the main thread
+/// Calls [`tick_global_task_pools_on_main_thread`] on the main thread.
 #[cfg(not(target_arch = "wasm32"))]
-fn tick_global_task_pools(_main_thread_marker: Option<NonSend<NonSendMarker>>) {
-    tick_global_task_pools_on_main_thread();
+fn tick_global_task_pools(mut main_thread: ThreadLocal) {
+    main_thread.run(|_| {
+        tick_global_task_pools_on_main_thread();
+    });
 }
 
 /// Maintains a count of frames rendered since the start of the application.
