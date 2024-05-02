@@ -63,7 +63,7 @@ impl Default for WinitSettings {
 /// **Note:** This setting is independent of VSync. VSync is controlled by a window's
 /// [`PresentMode`](bevy_window::PresentMode) setting. If an app can update faster than the refresh
 /// rate, but VSync is enabled, the update rate will be indirectly limited by the renderer.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub enum UpdateMode {
     /// The [`App`](bevy_app::App) will update over and over, as fast as it possibly can, until an
     /// [`AppExit`](bevy_app::AppExit) event appears.

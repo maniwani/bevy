@@ -1,5 +1,6 @@
 //! Types for declaring and storing [`Component`]s.
 
+use crate::storage::ThreadLocalResource;
 use crate::{
     self as bevy_ecs,
     archetype::ArchetypeFlags,
@@ -154,7 +155,7 @@ pub trait Component: Send + Sync + 'static {
     /// A constant indicating the storage type used for this component.
     const STORAGE_TYPE: StorageType;
 
-    /// Called when registering this component, allowing mutable access to its [`ComponentHooks`].
+    /// Called when registering this component, allowing mutable access to it's [`ComponentHooks`].
     fn register_component_hooks(_hooks: &mut ComponentHooks) {}
 }
 
@@ -182,7 +183,7 @@ pub enum StorageType {
 /// The type used for [`Component`] lifecycle hooks such as `on_add`, `on_insert` or `on_remove`
 pub type ComponentHook = for<'w> fn(DeferredWorld<'w>, Entity, ComponentId);
 
-/// Lifecycle hooks for a given [`Component`], stored in its [`ComponentInfo`]
+/// Lifecycle hooks for a given [`Component`], stored in it's [`ComponentInfo`]
 #[derive(Debug, Clone, Default)]
 pub struct ComponentHooks {
     pub(crate) on_add: Option<ComponentHook>,
@@ -193,7 +194,7 @@ pub struct ComponentHooks {
 impl ComponentHooks {
     /// Register a [`ComponentHook`] that will be run when this component is added to an entity.
     /// An `on_add` hook will always run before `on_insert` hooks. Spawning an entity counts as
-    /// adding all of its components.
+    /// adding all of it's components.
     ///
     /// Will panic if the component already has an `on_add` hook
     pub fn on_add(&mut self, hook: ComponentHook) -> &mut Self {
@@ -212,7 +213,7 @@ impl ComponentHooks {
     }
 
     /// Register a [`ComponentHook`] that will be run when this component is removed from an entity.
-    /// Despawning an entity counts as removing all of its components.
+    /// Despawning an entity counts as removing all of it's components.
     ///
     /// Will panic if the component already has an `on_remove` hook
     pub fn on_remove(&mut self, hook: ComponentHook) -> &mut Self {
@@ -726,11 +727,11 @@ impl Components {
         }
     }
 
-    /// Initializes a [non-send resource](crate::system::NonSend) of type `T` with this instance.
+    /// Initializes a [`ThreadLocalResource`] of type `T` with this instance.
     /// If a resource of this type has already been initialized, this will return
     /// the ID of the pre-existing resource.
     #[inline]
-    pub fn init_non_send<T: Any>(&mut self) -> ComponentId {
+    pub fn init_non_send<T: ThreadLocalResource>(&mut self) -> ComponentId {
         // SAFETY: The [`ComponentDescriptor`] matches the [`TypeId`]
         unsafe {
             self.get_or_insert_resource_with(TypeId::of::<T>(), || {
@@ -765,7 +766,7 @@ impl Components {
 
 /// A value that tracks when a system ran relative to other systems.
 /// This is used to power change detection.
-#[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "bevy_reflect", derive(Reflect), reflect(Debug, PartialEq))]
 pub struct Tick {
     tick: u32,
@@ -850,6 +851,7 @@ impl<'a> TickCells<'a> {
     /// # Safety
     /// All cells contained within must uphold the safety invariants of [`UnsafeCellDeref::read`].
     #[inline]
+    #[allow(dead_code)]
     pub(crate) unsafe fn read(&self) -> ComponentTicks {
         ComponentTicks {
             // SAFETY: The callers uphold the invariants for `read`.

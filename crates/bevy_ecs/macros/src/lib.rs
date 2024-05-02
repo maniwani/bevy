@@ -224,10 +224,6 @@ pub fn impl_param_set(_input: TokenStream) -> TokenStream {
                         // The variable is being defined with non_snake_case here
                         let #param = #param::init_state(world, &mut system_meta.clone());
                     )*
-                    // Make the ParamSet non-send if any of its parameters are non-send.
-                    if false #(|| !#meta.is_send())* {
-                        system_meta.set_non_send();
-                    }
                     #(
                         system_meta
                             .component_access_set
@@ -239,9 +235,8 @@ pub fn impl_param_set(_input: TokenStream) -> TokenStream {
                     (#(#param,)*)
                 }
 
-                unsafe fn new_archetype(state: &mut Self::State, archetype: &Archetype, system_meta: &mut SystemMeta) {
-                    // SAFETY: The caller ensures that `archetype` is from the World the state was initialized from in `init_state`.
-                    unsafe { <(#(#param,)*) as SystemParam>::new_archetype(state, archetype, system_meta); }
+                fn new_archetype(state: &mut Self::State, archetype: &Archetype, system_meta: &mut SystemMeta) {
+                    <(#(#param,)*) as SystemParam>::new_archetype(state, archetype, system_meta);
                 }
 
                 fn apply(state: &mut Self::State, system_meta: &SystemMeta, world: &mut World) {
@@ -426,9 +421,8 @@ pub fn derive_system_param(input: TokenStream) -> TokenStream {
                     }
                 }
 
-                unsafe fn new_archetype(state: &mut Self::State, archetype: &#path::archetype::Archetype, system_meta: &mut #path::system::SystemMeta) {
-                    // SAFETY: The caller ensures that `archetype` is from the World the state was initialized from in `init_state`.
-                    unsafe { <#fields_alias::<'_, '_, #punctuated_generic_idents> as #path::system::SystemParam>::new_archetype(&mut state.state, archetype, system_meta) }
+                fn new_archetype(state: &mut Self::State, archetype: &#path::archetype::Archetype, system_meta: &mut #path::system::SystemMeta) {
+                    <#fields_alias::<'_, '_, #punctuated_generic_idents> as #path::system::SystemParam>::new_archetype(&mut state.state, archetype, system_meta)
                 }
 
                 fn apply(state: &mut Self::State, system_meta: &#path::system::SystemMeta, world: &mut #path::world::World) {
@@ -503,26 +497,31 @@ pub(crate) fn bevy_ecs_path() -> syn::Path {
 }
 
 #[proc_macro_derive(Event)]
+/// Derive macro generating an impl of the trait `Event`.
 pub fn derive_event(input: TokenStream) -> TokenStream {
     component::derive_event(input)
 }
 
 #[proc_macro_derive(Resource)]
+/// Derive macro generating an impl of the trait `Resource`.
 pub fn derive_resource(input: TokenStream) -> TokenStream {
     component::derive_resource(input)
 }
 
+#[proc_macro_derive(ThreadLocalResource)]
+/// Derive macro generating an impl of the trait `ThreadLocalResource`.
+pub fn derive_thread_local_resource(input: TokenStream) -> TokenStream {
+    component::derive_thread_local_resource(input)
+}
+
 #[proc_macro_derive(Component, attributes(component))]
+/// Derive macro generating an impl of the trait `Component`.
 pub fn derive_component(input: TokenStream) -> TokenStream {
     component::derive_component(input)
 }
 
 #[proc_macro_derive(States)]
+/// Derive macro generating an impl of the trait `States`.
 pub fn derive_states(input: TokenStream) -> TokenStream {
     states::derive_states(input)
-}
-
-#[proc_macro_derive(SubStates, attributes(source))]
-pub fn derive_substates(input: TokenStream) -> TokenStream {
-    states::derive_substates(input)
 }

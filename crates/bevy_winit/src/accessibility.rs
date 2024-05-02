@@ -17,16 +17,19 @@ use bevy_app::{App, Plugin, PostUpdate};
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::entity::EntityHashMap;
 use bevy_ecs::{
-    prelude::{DetectChanges, Entity, EventReader, EventWriter},
+    prelude::{DetectChanges, Entity, EventReader, EventWriter, ThreadLocal, ThreadLocalResource},
     query::With,
     schedule::IntoSystemConfigs,
-    system::{NonSend, NonSendMut, Query, Res, ResMut, Resource},
+    system::{Query, Res, ResMut, Resource},
 };
 use bevy_hierarchy::{Children, Parent};
 use bevy_window::{PrimaryWindow, Window, WindowClosed};
 
 /// Maps window entities to their `AccessKit` [`Adapter`]s.
-#[derive(Default, Deref, DerefMut)]
+/// 
+/// **Note:** This is a [`ThreadLocalResource`] because the macOS implementation of [`Adapter`]
+/// is not [`Send`].
+#[derive(ThreadLocalResource, Default, Deref, DerefMut)]
 pub struct AccessKitAdapters(pub EntityHashMap<Adapter>);
 
 /// Maps window entities to their respective [`WinitActionHandler`]s.
@@ -76,14 +79,17 @@ pub(crate) fn prepare_accessibility_for_window(
 }
 
 fn window_closed(
-    mut adapters: NonSendMut<AccessKitAdapters>,
     mut receivers: ResMut<WinitActionHandlers>,
     mut events: EventReader<WindowClosed>,
+    mut main_thread: ThreadLocal,
 ) {
-    for WindowClosed { window, .. } in events.read() {
-        adapters.remove(window);
-        receivers.remove(window);
-    }
+    main_thread.run(|tls| {
+        let mut adapters = tls.resource_mut::<AccessKitAdapters>();
+        for WindowClosed { window, .. } in events.read() {
+            adapters.remove(window);
+            receivers.remove(window);
+        }
+    });
 }
 
 fn poll_receivers(
@@ -106,7 +112,6 @@ fn should_update_accessibility_nodes(
 }
 
 fn update_accessibility_nodes(
-    adapters: NonSend<AccessKitAdapters>,
     focus: Res<Focus>,
     primary_window: Query<(Entity, &Window), With<PrimaryWindow>>,
     nodes: Query<(
@@ -116,24 +121,28 @@ fn update_accessibility_nodes(
         Option<&Parent>,
     )>,
     node_entities: Query<Entity, With<AccessibilityNode>>,
+    mut main_thread: ThreadLocal,
 ) {
     let Ok((primary_window_id, primary_window)) = primary_window.get_single() else {
         return;
     };
-    let Some(adapter) = adapters.get(&primary_window_id) else {
-        return;
-    };
-    if focus.is_changed() || !nodes.is_empty() {
-        adapter.update_if_active(|| {
-            update_adapter(
-                nodes,
-                node_entities,
-                primary_window,
-                primary_window_id,
-                focus,
-            )
-        });
-    }
+    main_thread.run(|tls| {
+        let adapters = tls.resource::<AccessKitAdapters>();
+        let Some(adapter) = adapters.get(&primary_window_id) else {
+            return;
+        };
+        if focus.is_changed() || !nodes.is_empty() {
+            adapter.update_if_active(|| {
+                update_adapter(
+                    nodes,
+                    node_entities,
+                    primary_window,
+                    primary_window_id,
+                    focus,
+                )
+            });
+        }
+    });
 }
 
 fn update_adapter(

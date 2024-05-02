@@ -26,22 +26,25 @@ pub trait System: Send + Sync + 'static {
     /// The system's input. See [`In`](crate::system::In) for
     /// [`FunctionSystem`](crate::system::FunctionSystem)s.
     type In;
+
     /// The system's output.
     type Out;
+
     /// Returns the system's name.
     fn name(&self) -> Cow<'static, str>;
+
     /// Returns the [`TypeId`] of the underlying system type.
     #[inline]
     fn type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
+    
     /// Returns the system's component [`Access`].
     fn component_access(&self) -> &Access<ComponentId>;
+    
     /// Returns the system's archetype component [`Access`].
     fn archetype_component_access(&self) -> &Access<ArchetypeComponentId>;
-    /// Returns true if the system is [`Send`].
-    fn is_send(&self) -> bool;
-
+    
     /// Returns true if the system must be run exclusively.
     fn is_exclusive(&self) -> bool;
 
@@ -105,8 +108,6 @@ pub trait System: Send + Sync + 'static {
     fn check_change_tick(&mut self, change_tick: Tick);
 
     /// Returns the system's default [system sets](crate::schedule::SystemSet).
-    ///
-    /// Each system will create a default system set that contains the system.
     fn default_system_sets(&self) -> Vec<InternedSystemSet> {
         Vec::new()
     }
@@ -170,7 +171,6 @@ impl<In: 'static, Out: 'static> Debug for dyn System<In = In, Out = Out> {
         f.debug_struct("System")
             .field("name", &self.name())
             .field("is_exclusive", &self.is_exclusive())
-            .field("is_send", &self.is_send())
             .finish_non_exhaustive()
     }
 }
@@ -178,7 +178,7 @@ impl<In: 'static, Out: 'static> Debug for dyn System<In = In, Out = Out> {
 /// Trait used to run a system immediately on a [`World`].
 ///
 /// # Warning
-/// This function is not an efficient method of running systems and it's meant to be used as a utility
+/// This function is not an efficient method of running systems and its meant to be used as a utility
 /// for testing and/or diagnostics.
 ///
 /// Systems called through [`run_system_once`](RunSystemOnce::run_system_once) do not hold onto any state,
@@ -349,18 +349,5 @@ mod tests {
         assert_eq!(world.entities.len(), 0);
         world.run_system_once(spawn_entity);
         assert_eq!(world.entities.len(), 1);
-    }
-
-    #[test]
-    fn non_send_resources() {
-        fn non_send_count_down(mut ns: NonSendMut<Counter>) {
-            ns.0 -= 1;
-        }
-
-        let mut world = World::new();
-        world.insert_non_send_resource(Counter(10));
-        assert_eq!(*world.non_send_resource::<Counter>(), Counter(10));
-        world.run_system_once(non_send_count_down);
-        assert_eq!(*world.non_send_resource::<Counter>(), Counter(9));
     }
 }

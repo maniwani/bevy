@@ -1,9 +1,9 @@
-pub use crate::change_detection::{NonSendMut, Res, ResMut};
+pub use crate::change_detection::{Res, ResMut};
 use crate::{
     archetype::{Archetype, Archetypes},
     bundle::Bundles,
     change_detection::{Ticks, TicksMut},
-    component::{ComponentId, ComponentTicks, Components, Tick},
+    component::{ComponentId, Components, Tick},
     entity::Entities,
     query::{
         Access, FilteredAccess, FilteredAccessSet, QueryData, QueryFilter, QueryState,
@@ -137,16 +137,12 @@ pub unsafe trait SystemParam: Sized {
     /// and creates a new instance of this param's [`State`](Self::State).
     fn init_state(world: &mut World, system_meta: &mut SystemMeta) -> Self::State;
 
-    /// For the specified [`Archetype`], registers the components accessed by this [`SystemParam`] (if applicable).a
-    ///
-    /// # Safety
-    /// `archetype` must be from the [`World`] used to initialize `state` in `init_state`.
+    /// For the specified [`Archetype`], registers the components accessed by this [`SystemParam`] (if applicable).
     #[inline]
-    #[allow(unused_variables)]
-    unsafe fn new_archetype(
-        state: &mut Self::State,
-        archetype: &Archetype,
-        system_meta: &mut SystemMeta,
+    fn new_archetype(
+        _state: &mut Self::State,
+        _archetype: &Archetype,
+        _system_meta: &mut SystemMeta,
     ) {
     }
 
@@ -212,11 +208,7 @@ unsafe impl<D: QueryData + 'static, F: QueryFilter + 'static> SystemParam for Qu
         state
     }
 
-    unsafe fn new_archetype(
-        state: &mut Self::State,
-        archetype: &Archetype,
-        system_meta: &mut SystemMeta,
-    ) {
+    fn new_archetype(state: &mut Self::State, archetype: &Archetype, system_meta: &mut SystemMeta) {
         state.new_archetype(archetype, &mut system_meta.archetype_component_access);
     }
 
@@ -960,243 +952,6 @@ unsafe impl<T: SystemBuffer> SystemParam for Deferred<'_, T> {
     }
 }
 
-/// Shared borrow of a non-[`Send`] resource.
-///
-/// Only `Send` resources may be accessed with the [`Res`] [`SystemParam`]. In case that the
-/// resource does not implement `Send`, this `SystemParam` wrapper can be used. This will instruct
-/// the scheduler to instead run the system on the main thread so that it doesn't send the resource
-/// over to another thread.
-///
-/// # Panics
-///
-/// Panics when used as a `SystemParameter` if the resource does not exist.
-///
-/// Use `Option<NonSend<T>>` instead if the resource might not always exist.
-pub struct NonSend<'w, T: 'static> {
-    pub(crate) value: &'w T,
-    ticks: ComponentTicks,
-    last_run: Tick,
-    this_run: Tick,
-}
-
-// SAFETY: Only reads a single World non-send resource
-unsafe impl<'w, T> ReadOnlySystemParam for NonSend<'w, T> {}
-
-impl<'w, T> Debug for NonSend<'w, T>
-where
-    T: Debug,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("NonSend").field(&self.value).finish()
-    }
-}
-
-impl<'w, T: 'static> NonSend<'w, T> {
-    /// Returns `true` if the resource was added after the system last ran.
-    pub fn is_added(&self) -> bool {
-        self.ticks.is_added(self.last_run, self.this_run)
-    }
-
-    /// Returns `true` if the resource was added or mutably dereferenced after the system last ran.
-    pub fn is_changed(&self) -> bool {
-        self.ticks.is_changed(self.last_run, self.this_run)
-    }
-}
-
-impl<'w, T> Deref for NonSend<'w, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.value
-    }
-}
-impl<'a, T> From<NonSendMut<'a, T>> for NonSend<'a, T> {
-    fn from(nsm: NonSendMut<'a, T>) -> Self {
-        Self {
-            value: nsm.value,
-            ticks: ComponentTicks {
-                added: nsm.ticks.added.to_owned(),
-                changed: nsm.ticks.changed.to_owned(),
-            },
-            this_run: nsm.ticks.this_run,
-            last_run: nsm.ticks.last_run,
-        }
-    }
-}
-
-// SAFETY: NonSendComponentId and ArchetypeComponentId access is applied to SystemMeta. If this
-// NonSend conflicts with any prior access, a panic will occur.
-unsafe impl<'a, T: 'static> SystemParam for NonSend<'a, T> {
-    type State = ComponentId;
-    type Item<'w, 's> = NonSend<'w, T>;
-
-    fn init_state(world: &mut World, system_meta: &mut SystemMeta) -> Self::State {
-        system_meta.set_non_send();
-
-        let component_id = world.components.init_non_send::<T>();
-        world.initialize_non_send_internal(component_id);
-
-        let combined_access = system_meta.component_access_set.combined_access();
-        assert!(
-            !combined_access.has_write(component_id),
-            "error[B0002]: NonSend<{}> in system {} conflicts with a previous mutable resource access ({0}). Consider removing the duplicate access. See: https://bevyengine.org/learn/errors/#b0002",
-            std::any::type_name::<T>(),
-            system_meta.name,
-        );
-        system_meta
-            .component_access_set
-            .add_unfiltered_read(component_id);
-
-        let archetype_component_id = world
-            .get_non_send_archetype_component_id(component_id)
-            .unwrap();
-        system_meta
-            .archetype_component_access
-            .add_read(archetype_component_id);
-
-        component_id
-    }
-
-    #[inline]
-    unsafe fn get_param<'w, 's>(
-        &mut component_id: &'s mut Self::State,
-        system_meta: &SystemMeta,
-        world: UnsafeWorldCell<'w>,
-        change_tick: Tick,
-    ) -> Self::Item<'w, 's> {
-        let (ptr, ticks) = world
-            .get_non_send_with_ticks(component_id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "Non-send resource requested by {} does not exist: {}",
-                    system_meta.name,
-                    std::any::type_name::<T>()
-                )
-            });
-
-        NonSend {
-            value: ptr.deref(),
-            ticks: ticks.read(),
-            last_run: system_meta.last_run,
-            this_run: change_tick,
-        }
-    }
-}
-
-// SAFETY: Only reads a single World non-send resource
-unsafe impl<T: 'static> ReadOnlySystemParam for Option<NonSend<'_, T>> {}
-
-// SAFETY: this impl defers to `NonSend`, which initializes and validates the correct world access.
-unsafe impl<T: 'static> SystemParam for Option<NonSend<'_, T>> {
-    type State = ComponentId;
-    type Item<'w, 's> = Option<NonSend<'w, T>>;
-
-    fn init_state(world: &mut World, system_meta: &mut SystemMeta) -> Self::State {
-        NonSend::<T>::init_state(world, system_meta)
-    }
-
-    #[inline]
-    unsafe fn get_param<'w, 's>(
-        &mut component_id: &'s mut Self::State,
-        system_meta: &SystemMeta,
-        world: UnsafeWorldCell<'w>,
-        change_tick: Tick,
-    ) -> Self::Item<'w, 's> {
-        world
-            .get_non_send_with_ticks(component_id)
-            .map(|(ptr, ticks)| NonSend {
-                value: ptr.deref(),
-                ticks: ticks.read(),
-                last_run: system_meta.last_run,
-                this_run: change_tick,
-            })
-    }
-}
-
-// SAFETY: NonSendMut ComponentId and ArchetypeComponentId access is applied to SystemMeta. If this
-// NonSendMut conflicts with any prior access, a panic will occur.
-unsafe impl<'a, T: 'static> SystemParam for NonSendMut<'a, T> {
-    type State = ComponentId;
-    type Item<'w, 's> = NonSendMut<'w, T>;
-
-    fn init_state(world: &mut World, system_meta: &mut SystemMeta) -> Self::State {
-        system_meta.set_non_send();
-
-        let component_id = world.components.init_non_send::<T>();
-        world.initialize_non_send_internal(component_id);
-
-        let combined_access = system_meta.component_access_set.combined_access();
-        if combined_access.has_write(component_id) {
-            panic!(
-                "error[B0002]: NonSendMut<{}> in system {} conflicts with a previous mutable resource access ({0}). Consider removing the duplicate access. See: https://bevyengine.org/learn/errors/#b0002",
-                std::any::type_name::<T>(), system_meta.name);
-        } else if combined_access.has_read(component_id) {
-            panic!(
-                "error[B0002]: NonSendMut<{}> in system {} conflicts with a previous immutable resource access ({0}). Consider removing the duplicate access. See: https://bevyengine.org/learn/errors/#b0002",
-                std::any::type_name::<T>(), system_meta.name);
-        }
-        system_meta
-            .component_access_set
-            .add_unfiltered_write(component_id);
-
-        let archetype_component_id = world
-            .get_non_send_archetype_component_id(component_id)
-            .unwrap();
-        system_meta
-            .archetype_component_access
-            .add_write(archetype_component_id);
-
-        component_id
-    }
-
-    #[inline]
-    unsafe fn get_param<'w, 's>(
-        &mut component_id: &'s mut Self::State,
-        system_meta: &SystemMeta,
-        world: UnsafeWorldCell<'w>,
-        change_tick: Tick,
-    ) -> Self::Item<'w, 's> {
-        let (ptr, ticks) = world
-            .get_non_send_with_ticks(component_id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "Non-send resource requested by {} does not exist: {}",
-                    system_meta.name,
-                    std::any::type_name::<T>()
-                )
-            });
-        NonSendMut {
-            value: ptr.assert_unique().deref_mut(),
-            ticks: TicksMut::from_tick_cells(ticks, system_meta.last_run, change_tick),
-        }
-    }
-}
-
-// SAFETY: this impl defers to `NonSendMut`, which initializes and validates the correct world access.
-unsafe impl<'a, T: 'static> SystemParam for Option<NonSendMut<'a, T>> {
-    type State = ComponentId;
-    type Item<'w, 's> = Option<NonSendMut<'w, T>>;
-
-    fn init_state(world: &mut World, system_meta: &mut SystemMeta) -> Self::State {
-        NonSendMut::<T>::init_state(world, system_meta)
-    }
-
-    #[inline]
-    unsafe fn get_param<'w, 's>(
-        &mut component_id: &'s mut Self::State,
-        system_meta: &SystemMeta,
-        world: UnsafeWorldCell<'w>,
-        change_tick: Tick,
-    ) -> Self::Item<'w, 's> {
-        world
-            .get_non_send_with_ticks(component_id)
-            .map(|(ptr, ticks)| NonSendMut {
-                value: ptr.assert_unique().deref_mut(),
-                ticks: TicksMut::from_tick_cells(ticks, system_meta.last_run, change_tick),
-            })
-    }
-}
-
 // SAFETY: Only reads World archetypes
 unsafe impl<'a> ReadOnlySystemParam for &'a Archetypes {}
 
@@ -1351,10 +1106,8 @@ macro_rules! impl_system_param_tuple {
             }
 
             #[inline]
-            #[allow(unused_unsafe)]
-            unsafe fn new_archetype(($($param,)*): &mut Self::State, _archetype: &Archetype, _system_meta: &mut SystemMeta) {
-                // SAFETY: The caller ensures that `archetype` is from the World the state was initialized from in `init_state`.
-                unsafe { $($param::new_archetype($param, _archetype, _system_meta);)* }
+            fn new_archetype(($($param,)*): &mut Self::State, _archetype: &Archetype, _system_meta: &mut SystemMeta) {
+                $($param::new_archetype($param, _archetype, _system_meta);)*
             }
 
             #[inline]
@@ -1497,13 +1250,8 @@ unsafe impl<P: SystemParam + 'static> SystemParam for StaticSystemParam<'_, '_, 
         P::init_state(world, system_meta)
     }
 
-    unsafe fn new_archetype(
-        state: &mut Self::State,
-        archetype: &Archetype,
-        system_meta: &mut SystemMeta,
-    ) {
-        // SAFETY: The caller guarantees that the provided `archetype` matches the World used to initialize `state`.
-        unsafe { P::new_archetype(state, archetype, system_meta) };
+    fn new_archetype(state: &mut Self::State, archetype: &Archetype, system_meta: &mut SystemMeta) {
+        P::new_archetype(state, archetype, system_meta);
     }
 
     fn apply(state: &mut Self::State, system_meta: &SystemMeta, world: &mut World) {
@@ -1546,9 +1294,9 @@ mod tests {
     use super::*;
     use crate::{
         self as bevy_ecs, // Necessary for the `SystemParam` Derive when used inside `bevy_ecs`.
-        system::assert_is_system,
+        system::{assert_is_system, Query},
     };
-    use std::cell::RefCell;
+    use std::{cell::RefCell, marker::PhantomData};
 
     // Compile test for https://github.com/bevyengine/bevy/pull/2838.
     #[test]
@@ -1728,36 +1476,6 @@ mod tests {
         let mut world = World::new();
         let mut schedule = crate::schedule::Schedule::default();
         schedule.add_systems(non_sync_system);
-        schedule.run(&mut world);
-    }
-
-    // Regression test for https://github.com/bevyengine/bevy/issues/10207.
-    #[test]
-    fn param_set_non_send_first() {
-        fn non_send_param_set(mut p: ParamSet<(NonSend<*mut u8>, ())>) {
-            let _ = p.p0();
-            p.p1();
-        }
-
-        let mut world = World::new();
-        world.insert_non_send_resource(std::ptr::null_mut::<u8>());
-        let mut schedule = crate::schedule::Schedule::default();
-        schedule.add_systems((non_send_param_set, non_send_param_set, non_send_param_set));
-        schedule.run(&mut world);
-    }
-
-    // Regression test for https://github.com/bevyengine/bevy/issues/10207.
-    #[test]
-    fn param_set_non_send_second() {
-        fn non_send_param_set(mut p: ParamSet<((), NonSendMut<*mut u8>)>) {
-            p.p0();
-            let _ = p.p1();
-        }
-
-        let mut world = World::new();
-        world.insert_non_send_resource(std::ptr::null_mut::<u8>());
-        let mut schedule = crate::schedule::Schedule::default();
-        schedule.add_systems((non_send_param_set, non_send_param_set, non_send_param_set));
         schedule.run(&mut world);
     }
 }

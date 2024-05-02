@@ -22,9 +22,6 @@ pub struct SystemMeta {
     pub(crate) name: Cow<'static, str>,
     pub(crate) component_access_set: FilteredAccessSet<ComponentId>,
     pub(crate) archetype_component_access: Access<ArchetypeComponentId>,
-    // NOTE: this must be kept private. making a SystemMeta non-send is irreversible to prevent
-    // SystemParams from overriding each other
-    is_send: bool,
     has_deferred: bool,
     pub(crate) last_run: Tick,
     #[cfg(feature = "trace")]
@@ -40,7 +37,6 @@ impl SystemMeta {
             name: name.into(),
             archetype_component_access: Access::default(),
             component_access_set: FilteredAccessSet::default(),
-            is_send: true,
             has_deferred: false,
             last_run: Tick::new(0),
             #[cfg(feature = "trace")]
@@ -54,20 +50,6 @@ impl SystemMeta {
     #[inline]
     pub fn name(&self) -> &str {
         &self.name
-    }
-
-    /// Returns true if the system is [`Send`].
-    #[inline]
-    pub fn is_send(&self) -> bool {
-        self.is_send
-    }
-
-    /// Sets the system to be not [`Send`].
-    ///
-    /// This is irreversible.
-    #[inline]
-    pub fn set_non_send(&mut self) {
-        self.is_send = false;
     }
 
     /// Returns true if the system has deferred [`SystemParam`]'s
@@ -284,15 +266,12 @@ impl<Param: SystemParam> SystemState<Param> {
     /// This method only accesses world metadata.
     #[inline]
     pub fn update_archetypes_unsafe_world_cell(&mut self, world: UnsafeWorldCell) {
-        assert_eq!(self.world_id, world.id(), "Encountered a mismatched World. A System cannot be used with Worlds other than the one it was initialized with.");
-
         let archetypes = world.archetypes();
         let old_generation =
             std::mem::replace(&mut self.archetype_generation, archetypes.generation());
 
         for archetype in &archetypes[old_generation..] {
-            // SAFETY: The assertion above ensures that the param_state was initialized from `world`.
-            unsafe { Param::new_archetype(&mut self.param_state, archetype, &mut self.meta) };
+            Param::new_archetype(&mut self.param_state, archetype, &mut self.meta);
         }
     }
 
@@ -470,11 +449,6 @@ where
     }
 
     #[inline]
-    fn is_send(&self) -> bool {
-        self.system_meta.is_send
-    }
-
-    #[inline]
     fn is_exclusive(&self) -> bool {
         false
     }
@@ -530,8 +504,7 @@ where
 
         for archetype in &archetypes[old_generation..] {
             let param_state = self.param_state.as_mut().unwrap();
-            // SAFETY: The assertion above ensures that the param_state was initialized from `world`.
-            unsafe { F::Param::new_archetype(param_state, archetype, &mut self.system_meta) };
+            F::Param::new_archetype(param_state, archetype, &mut self.system_meta);
         }
     }
 

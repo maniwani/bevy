@@ -15,7 +15,6 @@ use bevy_window::{
     CompositeAlphaMode, PresentMode, PrimaryWindow, RawHandleWrapper, Window, WindowClosed,
 };
 use std::{
-    num::NonZeroU32,
     ops::{Deref, DerefMut},
     sync::PoisonError,
 };
@@ -67,7 +66,6 @@ pub struct ExtractedWindow {
     pub physical_width: u32,
     pub physical_height: u32,
     pub present_mode: PresentMode,
-    pub desired_maximum_frame_latency: Option<NonZeroU32>,
     /// Note: this will not always be the swap chain texture view. When taking a screenshot,
     /// this will point to an alternative texture instead to allow for copying the render result
     /// to CPU memory.
@@ -138,7 +136,6 @@ fn extract_windows(
             physical_width: new_width,
             physical_height: new_height,
             present_mode: window.present_mode,
-            desired_maximum_frame_latency: window.desired_maximum_frame_latency,
             swap_chain_texture: None,
             swap_chain_texture_view: None,
             size_changed: false,
@@ -226,25 +223,25 @@ const NVIDIA_VENDOR_ID: u32 = 0x10DE;
 
 /// (re)configures window surfaces, and obtains a swapchain texture for rendering.
 ///
-/// NOTE: `get_current_texture` in `prepare_windows` can take a long time if the GPU workload is
-/// the performance bottleneck. This can be seen in profiles as multiple prepare-set systems all
-/// taking an unusually long time to complete, and all finishing at about the same time as the
-/// `prepare_windows` system. Improvements in bevy are planned to avoid this happening when it
-/// should not but it will still happen as it is easy for a user to create a large GPU workload
-/// relative to the GPU performance and/or CPU workload.
-/// This can be caused by many reasons, but several of them are:
-/// - GPU workload is more than your current GPU can manage
-/// - Error / performance bug in your custom shaders
-/// - wgpu was unable to detect a proper GPU hardware-accelerated device given the chosen
+/// **NOTE:** `get_current_texture` (acquiring the next framebuffer) in `prepare_windows` can take
+/// a long time if the GPU workload is heavy. This can be seen in profiling views with many prepare
+/// systems taking an unusually long time to complete, but all finishing at around the same time
+/// `prepare_windows` does. Performance improvements are planned to reduce how often this happens,
+/// but it will still be possible, since it's easy to create a heavy GPU workload.
+///
+/// These are some contributing factors:
+/// - The GPU workload is more than your GPU can handle.
+/// - There are custom shaders with an error / performance bug.
+/// - wgpu could not detect a proper GPU hardware-accelerated device given the chosen
 ///   [`Backends`](crate::settings::Backends), [`WgpuLimits`](crate::settings::WgpuLimits),
-///   and/or [`WgpuFeatures`](crate::settings::WgpuFeatures). For example, on Windows currently
-///   `DirectX 11` is not supported by wgpu 0.12 and so if your GPU/drivers do not support Vulkan,
-///   it may be that a software renderer called "Microsoft Basic Render Driver" using `DirectX 12`
-///   will be chosen and performance will be very poor. This is visible in a log message that is
-///   output during renderer initialization. Future versions of wgpu will support `DirectX 11`, but
-///   another alternative is to try to use [`ANGLE`](https://github.com/gfx-rs/wgpu#angle) and
-///   [`Backends::GL`](crate::settings::Backends::GL) if your GPU/drivers support `OpenGL 4.3` / `OpenGL ES 3.0` or
-///   later.
+///   and/or [`WgpuFeatures`](crate::settings::WgpuFeatures).
+///   - On Windows, DirectX 11 is not supported by wgpu 0.12, and if your GPU/drivers do not
+/// support Vulkan, a software renderer called "Microsoft Basic Render Driver" using DirectX 12
+/// may be used and performance will be very poor. This will be logged as a message when the
+/// renderer is initialized. Future versions of wgpu will support DirectX 11, but an
+/// alternative is to try to use [`ANGLE`](https://github.com/gfx-rs/wgpu#angle) and
+/// [`Backends::GL`](crate::settings::Backends::GL) if your GPU/drivers support OpenGL 4.3,
+/// OpenGL ES 3.0, or later.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_windows(
     mut windows: ResMut<ExtractedWindows>,
@@ -344,7 +341,7 @@ pub fn prepare_windows(
                 Err(wgpu::SurfaceError::Outdated) if is_nvidia() => {
                     warn_once!(
                         "Couldn't get swap chain texture. This often happens with \
-                        the NVIDIA drivers on Linux. It can be safely ignored."
+                        the Nvidia 550 driver. It can be safely ignored."
                     );
                 }
                 Err(wgpu::SurfaceError::Outdated) => {
@@ -432,19 +429,9 @@ pub fn need_surface_configuration(
     false
 }
 
-// 2 is wgpu's default/what we've been using so far.
-// 1 is the minimum, but may cause lower framerates due to the cpu waiting for the gpu to finish
-// all work for the previous frame before starting work on the next frame, which then means the gpu
-// has to wait for the cpu to finish to start on the next frame.
-const DEFAULT_DESIRED_MAXIMUM_FRAME_LATENCY: u32 = 2;
-
 /// Creates window surfaces.
 pub fn create_surfaces(
-    // By accessing a NonSend resource, we tell the scheduler to put this system on the main thread,
-    // which is necessary for some OS's
-    #[cfg(any(target_os = "macos", target_os = "ios"))] _marker: Option<
-        NonSend<bevy_core::NonSendMarker>,
-    >,
+    mut main_thread: ThreadLocal,
     windows: Res<ExtractedWindows>,
     mut window_surfaces: ResMut<WindowSurfaces>,
     render_instance: Res<RenderInstance>,
@@ -452,30 +439,31 @@ pub fn create_surfaces(
     render_device: Res<RenderDevice>,
 ) {
     for window in windows.windows.values() {
-        let data = window_surfaces
+        let surface_data = window_surfaces
             .surfaces
             .entry(window.entity)
             .or_insert_with(|| {
-                let surface_target = SurfaceTargetUnsafe::RawHandle {
-                    raw_display_handle: window.handle.display_handle,
-                    raw_window_handle: window.handle.window_handle,
-                };
-                // SAFETY: The window handles in ExtractedWindows will always be valid objects to create surfaces on
-                let surface = unsafe {
-                    // NOTE: On some OSes this MUST be called from the main thread.
-                    // As of wgpu 0.15, only fallible if the given window is a HTML canvas and obtaining a WebGPU or WebGL2 context fails.
-                    render_instance
-                        .create_surface_unsafe(surface_target)
-                        .expect("Failed to create wgpu surface")
-                };
+                let surface = main_thread.run(|_| {
+                    // SAFETY: this raw window handle is valid
+                    unsafe {
+                        render_instance
+                            // Some operating systems only allow dereferencing window handles in
+                            // the *main* thread (and may panic if done in another thread).
+                            .create_surface(&window.handle.get_handle())
+                            // As of wgpu 0.15, this can only fail if the window is a HTML canvas
+                            // and obtaining a WebGPU/WebGL2 context fails.
+                            .expect("failed to create wgpu surface")
+                    }
+                });
                 let caps = surface.get_capabilities(&render_adapter);
                 let formats = caps.formats;
-                // For future HDR output support, we'll need to request a format that supports HDR,
-                // but as of wgpu 0.15 that is not yet supported.
-                // Prefer sRGB formats for surfaces, but fall back to first available format if no sRGB formats are available.
-                let mut format = *formats.first().expect("No supported formats for surface");
+                // Prefer sRGB formats, but fall back to first available format if none available.
+                // NOTE: To support HDR output in the future, we'll need to request a format that
+                // supports HDR, but as of wgpu 0.15 that is still unsupported.
+                let mut format = *formats.get(0).expect("no supported formats for surface");
                 for available_format in formats {
-                    // Rgba8UnormSrgb and Bgra8UnormSrgb and the only sRGB formats wgpu exposes that we can use for surfaces.
+                    // Rgba8UnormSrgb and Bgra8UnormSrgb and the only sRGB formats wgpu exposes
+                    // that we can use for surfaces.
                     if available_format == TextureFormat::Rgba8UnormSrgb
                         || available_format == TextureFormat::Bgra8UnormSrgb
                     {
@@ -497,10 +485,12 @@ pub fn create_surfaces(
                         PresentMode::AutoVsync => wgpu::PresentMode::AutoVsync,
                         PresentMode::AutoNoVsync => wgpu::PresentMode::AutoNoVsync,
                     },
-                    desired_maximum_frame_latency: window
-                        .desired_maximum_frame_latency
-                        .map(NonZeroU32::get)
-                        .unwrap_or(DEFAULT_DESIRED_MAXIMUM_FRAME_LATENCY),
+                    // TODO: Expose this as a setting somewhere
+                    // 2 is wgpu's default/what we've been using so far.
+                    // 1 is the minimum, but may cause lower framerates due to the cpu waiting for the gpu to finish
+                    // all work for the previous frame before starting work on the next frame, which then means the gpu
+                    // has to wait for the cpu to finish to start on the next frame.
+                    desired_maximum_frame_latency: 2,
                     alpha_mode: match window.alpha_mode {
                         CompositeAlphaMode::Auto => wgpu::CompositeAlphaMode::Auto,
                         CompositeAlphaMode::Opaque => wgpu::CompositeAlphaMode::Opaque,
